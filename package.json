@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "to-mp4": "bash ./scripts/convert-webm-to-mp4.sh"
   },
   "dependencies": {
     "@turf/turf": "^7.3.4",

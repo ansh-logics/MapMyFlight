@@ -7,99 +7,41 @@ import * as turf from "@turf/turf";
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "";
 
-const DEFAULT_CENTER: [number, number] = [77.209, 28.6139]; // Delhi
+const DEFAULT_CENTER: [number, number] = [77.209, 28.6139];
 const DEFAULT_ZOOM = 3;
-const SOURCE_HOLD_MS = 2000; // zoom on source before takeoff
-const FLIGHT_DURATION_MS = 6000; // plane flies straight from source to dest
-const ZOOM_OUT_DURATION_MS = 2000; // reveal full journey at end
-const ZOOM_IN_LEVEL = 11; // zoom on source and for detail
-const TRACKING_ZOOM = 5.5; // zoom while camera follows the plane
-const TRACKING_PITCH = 55; // tilt camera for 3D feel
-const TRACKING_BEARING = -20; // slight rotation for depth
+const SOURCE_HOLD_MS = 2000;
+const FLIGHT_DURATION_MS = 6000;
+const ZOOM_OUT_DURATION_MS = 2000;
+const ZOOM_IN_LEVEL = 11;
+const TRACKING_ZOOM = 5.5;
+const TRACKING_PITCH = 55;
+const TRACKING_BEARING = -20;
 const PERFORMANCE_TRACKING_PITCH = 35;
 const PERFORMANCE_TRACKING_BEARING = -10;
 const OUTRO_PITCH = 0;
 const OUTRO_BEARING = 0;
+const DEFAULT_ANIMATION_FPS = 30;
+const CAMERA_UPDATE_INTERVAL_MS = 50;
+
+const ROUTE_SOURCE_ID = "route";
+const ROUTE_LAYER_ID = "route";
+const PLANE_SOURCE_ID = "plane-position";
+const PLANE_LAYER_ID = "plane";
+const PLANE_CORE_LAYER_ID = "plane-core";
+const TERRAIN_SOURCE_ID = "mapbox-dem";
+const SKY_LAYER_ID = "sky";
+
 const PLANE_ICON_ID = "plane-icon";
-const PLANE_ICON_SCALE = 0.8; // default size of plane icon
+const PLANE_ICON_SCALE = 0.8;
 const MAX_ICON_PIXEL_RATIO = 2;
-const PLANE_SVG = `<svg width="64" height="64" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
-  <g fill="#ffffff">
+const ROUTE_POINTS = 120;
+
+const DEFAULT_PLANE_COLOR = "#22C55E";
+const PLANE_SVG_TEMPLATE = (color: string) => `<svg width="64" height="64" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <g fill="${color}">
     <path d="M256 0c-10 0-18 8-18 18v160L64 256v36l174-36v160l-46 32v32l64-18 64 18v-32l-46-32V256l174 36v-36L274 178V18c0-10-8-18-18-18z"/>
   </g>
 </svg>`;
-const PLANE_SVG_URI = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-  PLANE_SVG
-)}`;
-const ROUTE_POINTS = 120;
-
-function lerp(
-  start: [number, number],
-  end: [number, number],
-  t: number
-): [number, number] {
-  return [
-    start[0] + (end[0] - start[0]) * t,
-    start[1] + (end[1] - start[1]) * t,
-  ];
-}
-
-function bearingDeg(start: [number, number], end: [number, number]): number {
-  const [lng1, lat1] = start;
-  const [lng2, lat2] = end;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const lat1Rad = (lat1 * Math.PI) / 180;
-  const lat2Rad = (lat2 * Math.PI) / 180;
-  const y = Math.sin(dLng) * Math.cos(lat2Rad);
-  const x =
-    Math.cos(lat1Rad) * Math.sin(lat2Rad) -
-    Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLng);
-  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
-}
-
-function buildLiftedRoute(
-  coords: [number, number][],
-  heightScale: number
-): [number, number][] {
-  if (coords.length < 2) return coords;
-  const distanceKm = turf.distance(turf.point(coords[0]), turf.point(coords[coords.length - 1]), {
-    units: "kilometers",
-  });
-  const scaled = distanceKm * heightScale;
-  const maxHeightKm = Math.min(800, Math.max(40, scaled));
-  const lastIndex = coords.length - 1;
-
-  return coords.map((coord, idx) => {
-    const t = idx / lastIndex;
-    const heightKm = Math.sin(Math.PI * t) * maxHeightKm;
-    if (heightKm <= 0.0001) return coord;
-    const prev = coords[Math.max(idx - 1, 0)];
-    const next = coords[Math.min(idx + 1, lastIndex)];
-    const tangent = turf.bearing(turf.point(prev), turf.point(next));
-    const offsetBearing = tangent + 90;
-    const shifted = turf.destination(turf.point(coord), heightKm, offsetBearing, {
-      units: "kilometers",
-    });
-    return shifted.geometry.coordinates as [number, number];
-  });
-}
-
-function adjustHexColor(hex: string, amount: number): string | null {
-  const normalized = hex.trim().replace("#", "");
-  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null;
-  const num = parseInt(normalized, 16);
-  const clamp = (v: number) => Math.min(255, Math.max(0, v));
-  const r = clamp((num >> 16) + amount);
-  const g = clamp(((num >> 8) & 0xff) + amount);
-  const b = clamp((num & 0xff) + amount);
-  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
-}
-
-function fallbackRadius(scale: number): number {
-  const base = 8;
-  const factor = Math.max(0.6, scale / PLANE_ICON_SCALE);
-  return Math.min(22, Math.max(6, base * factor));
-}
 
 type MapProps = {
   path?: [number, number][] | null;
@@ -117,12 +59,204 @@ type MapProps = {
   fixedFps?: number | null;
 };
 
+function lerp(start: [number, number], end: [number, number], t: number): [number, number] {
+  return [
+    start[0] + (end[0] - start[0]) * t,
+    start[1] + (end[1] - start[1]) * t,
+  ];
+}
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function bearingDeg(start: [number, number], end: [number, number]): number {
+  const [lng1, lat1] = start;
+  const [lng2, lat2] = end;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const lat1Rad = (lat1 * Math.PI) / 180;
+  const lat2Rad = (lat2 * Math.PI) / 180;
+  const y = Math.sin(dLng) * Math.cos(lat2Rad);
+  const x =
+    Math.cos(lat1Rad) * Math.sin(lat2Rad) -
+    Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLng);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+function adjustHexColor(hex: string, amount: number): string | null {
+  const normalized = hex.trim().replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null;
+  const num = parseInt(normalized, 16);
+  const clamp = (v: number) => Math.min(255, Math.max(0, v));
+  const r = clamp((num >> 16) + amount);
+  const g = clamp(((num >> 8) & 0xff) + amount);
+  const b = clamp((num & 0xff) + amount);
+  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+}
+
+function fallbackRadius(scale: number): number {
+  const base = 7;
+  const factor = Math.max(0.6, scale / PLANE_ICON_SCALE);
+  return Math.min(22, Math.max(5, base * factor));
+}
+
+function buildLiftedRoute(coords: [number, number][], heightScale: number): [number, number][] {
+  if (coords.length < 2) return coords;
+  const distanceKm = turf.distance(
+    turf.point(coords[0]),
+    turf.point(coords[coords.length - 1]),
+    { units: "kilometers" }
+  );
+  const maxHeightKm = Math.min(800, Math.max(40, distanceKm * heightScale));
+  const lastIndex = coords.length - 1;
+
+  return coords.map((coord, idx) => {
+    const t = idx / lastIndex;
+    const heightKm = Math.sin(Math.PI * t) * maxHeightKm;
+    if (heightKm <= 0.0001) return coord;
+    const prev = coords[Math.max(idx - 1, 0)];
+    const next = coords[Math.min(idx + 1, lastIndex)];
+    const tangent = turf.bearing(turf.point(prev), turf.point(next));
+    const shifted = turf.destination(turf.point(coord), heightKm, tangent + 90, {
+      units: "kilometers",
+    });
+    return shifted.geometry.coordinates as [number, number];
+  });
+}
+
+function normalizeGreatCircleCoordinates(
+  geometry: unknown,
+  fallbackStart: [number, number],
+  fallbackEnd: [number, number]
+): [number, number][] {
+  if (!geometry || typeof geometry !== "object") return [fallbackStart, fallbackEnd];
+  const parsed = geometry as { type?: string; coordinates?: unknown };
+
+  if (parsed.type === "LineString" && Array.isArray(parsed.coordinates)) {
+    const line = parsed.coordinates.filter(
+      (coord): coord is [number, number] =>
+        Array.isArray(coord) &&
+        coord.length >= 2 &&
+        Number.isFinite(coord[0]) &&
+        Number.isFinite(coord[1])
+    );
+    return line.length >= 2 ? line : [fallbackStart, fallbackEnd];
+  }
+
+  if (parsed.type === "MultiLineString" && Array.isArray(parsed.coordinates)) {
+    const lines = parsed.coordinates
+      .filter(Array.isArray)
+      .map((line) =>
+        line.filter(
+          (coord): coord is [number, number] =>
+            Array.isArray(coord) &&
+            coord.length >= 2 &&
+            Number.isFinite(coord[0]) &&
+            Number.isFinite(coord[1])
+        )
+      )
+      .filter((line) => line.length >= 2);
+    if (!lines.length) return [fallbackStart, fallbackEnd];
+    return lines.reduce((best, current) => (current.length > best.length ? current : best));
+  }
+
+  return [fallbackStart, fallbackEnd];
+}
+
+function lineFeature(coords: [number, number][]) {
+  return {
+    type: "Feature" as const,
+    properties: {},
+    geometry: {
+      type: "LineString" as const,
+      coordinates: coords,
+    },
+  };
+}
+
+function pointFeature(coords: [number, number], bearing: number) {
+  return {
+    type: "Feature" as const,
+    geometry: {
+      type: "Point" as const,
+      coordinates: coords,
+    },
+    properties: {
+      bearing,
+    },
+  };
+}
+
+function removeLayerIfExists(map: mapboxgl.Map, id: string) {
+  if (map.getLayer(id)) map.removeLayer(id);
+}
+
+function removeSourceIfExists(map: mapboxgl.Map, id: string) {
+  if (map.getSource(id)) map.removeSource(id);
+}
+
+async function waitForStyleLoaded(map: mapboxgl.Map): Promise<void> {
+  if (map.isStyleLoaded()) return;
+  await new Promise<void>((resolve) => {
+    const onStyleLoad = () => {
+      map.off("style.load", onStyleLoad);
+      resolve();
+    };
+    map.on("style.load", onStyleLoad);
+  });
+}
+
+async function ensurePlaneImage(map: mapboxgl.Map, color: string): Promise<boolean> {
+  const svg = PLANE_SVG_TEMPLATE(color);
+  const uri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+
+  if (map.hasImage(PLANE_ICON_ID)) {
+    map.removeImage(PLANE_ICON_ID);
+  }
+
+  const addImage = (image: ImageBitmap | HTMLImageElement | ImageData) => {
+    if (map.hasImage(PLANE_ICON_ID)) return;
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, MAX_ICON_PIXEL_RATIO);
+    map.addImage(PLANE_ICON_ID, image, { pixelRatio });
+  };
+
+  try {
+    if ("createImageBitmap" in window) {
+      const blob = new Blob([svg], { type: "image/svg+xml" });
+      const bitmap = await createImageBitmap(blob);
+      addImage(bitmap);
+      return true;
+    }
+  } catch {
+    // fallback below
+  }
+
+  const loaded = await new Promise<boolean>((resolve) => {
+    map.loadImage(uri, (err, image) => {
+      if (!err && image) {
+        addImage(image);
+        resolve(true);
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        addImage(img);
+        resolve(true);
+      };
+      img.onerror = () => resolve(false);
+      img.src = uri;
+    });
+  });
+
+  return loaded && map.hasImage(PLANE_ICON_ID);
+}
+
 export default function Map({
   path,
   replayTrigger = 0,
   onMapReady,
   onSequenceComplete,
-  planeColor = "#22C55E",
+  planeColor = DEFAULT_PLANE_COLOR,
   planeScale = PLANE_ICON_SCALE,
   routeColor = "#3b82f6",
   routeWidth = 3,
@@ -133,146 +267,114 @@ export default function Map({
   fixedFps = null,
 }: MapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
-  const map = useRef<mapboxgl.Map | null>(null);
-  const animationFrame = useRef<number | null>(null);
-  const holdTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cancelled = useRef(false);
+  const mapRef = useRef<mapboxgl.Map | null>(null);
+  const appliedStyleRef = useRef(mapStyle);
+  const animationFrameRef = useRef<number | null>(null);
+  const holdTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelledRef = useRef(false);
   const onSequenceCompleteRef = useRef(onSequenceComplete);
-  const planeImageReady = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     onSequenceCompleteRef.current = onSequenceComplete;
   }, [onSequenceComplete]);
 
   useEffect(() => {
-    if (!mapContainer.current || map.current) return;
+    if (!mapContainer.current || mapRef.current) return;
 
-    const m = new mapboxgl.Map({
+    const map = new mapboxgl.Map({
       container: mapContainer.current,
-      style: mapStyle,
+      style: appliedStyleRef.current,
       center: DEFAULT_CENTER,
       zoom: DEFAULT_ZOOM,
       antialias: true,
-      preserveDrawingBuffer: true,
     });
-    map.current = m;
-    onMapReady?.(m);
-  }, [onMapReady, mapStyle]);
+
+    mapRef.current = map;
+    onMapReady?.(map);
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+  }, [onMapReady]);
 
   useEffect(() => {
-    const m = map.current;
-    if (!m) return;
+    const map = mapRef.current;
+    if (!map) return;
+    if (appliedStyleRef.current === mapStyle) return;
 
-    cancelled.current = false;
+    appliedStyleRef.current = mapStyle;
+    cancelledRef.current = true;
+    if (animationFrameRef.current != null) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    if (holdTimeoutRef.current != null) {
+      clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
 
-    const ensurePlaneImage = (mapInstance: mapboxgl.Map = m) => {
-      if (planeImageReady.current) {
-        if (mapInstance.hasImage(PLANE_ICON_ID)) {
-          return planeImageReady.current;
-        }
-        planeImageReady.current = null;
+    if (!map.loaded()) {
+      map.once("load", () => map.setStyle(mapStyle));
+      return;
+    }
+    map.setStyle(mapStyle);
+  }, [mapStyle]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    cancelledRef.current = false;
+
+    const cleanupSequence = () => {
+      cancelledRef.current = true;
+      map.stop();
+      if (holdTimeoutRef.current != null) {
+        clearTimeout(holdTimeoutRef.current);
+        holdTimeoutRef.current = null;
       }
-      planeImageReady.current = new Promise((resolve) => {
-        if (mapInstance.hasImage(PLANE_ICON_ID)) {
-          resolve();
-          return;
-        }
-        const addPlaneImage = (image: mapboxgl.Image | HTMLImageElement | ImageBitmap) => {
-          if (mapInstance.hasImage(PLANE_ICON_ID)) return;
-          const pixelRatio = Math.min(
-            window.devicePixelRatio || 1,
-            MAX_ICON_PIXEL_RATIO
-          );
-          mapInstance.addImage(PLANE_ICON_ID, image, { pixelRatio, sdf: true });
-        };
-
-        const svgBlob = new Blob([PLANE_SVG], { type: "image/svg+xml" });
-        if ("createImageBitmap" in window) {
-          createImageBitmap(svgBlob)
-            .then((bitmap) => {
-              addPlaneImage(bitmap);
-              resolve();
-            })
-            .catch(() => {
-              mapInstance.loadImage(PLANE_SVG_URI, (err, image) => {
-                if (!err && image) {
-                  addPlaneImage(image);
-                  resolve();
-                  return;
-                }
-                const img = new Image();
-                img.onload = () => {
-                  addPlaneImage(img);
-                  resolve();
-                };
-                img.onerror = () => resolve();
-                img.src = PLANE_SVG_URI;
-              });
-            });
-          return;
-        }
-
-        mapInstance.loadImage(PLANE_SVG_URI, (err, image) => {
-          if (!err && image) {
-            addPlaneImage(image);
-            resolve();
-            return;
-          }
-          const img = new Image();
-          img.onload = () => {
-            addPlaneImage(img);
-            resolve();
-          };
-          img.onerror = () => resolve();
-          img.src = PLANE_SVG_URI;
-        });
-      });
-      return planeImageReady.current;
-    };
-
-    const onStyleImageMissing = (e: mapboxgl.StyleImageMissingEvent) => {
-      if (e.id === PLANE_ICON_ID) {
-        void ensurePlaneImage(m);
+      if (animationFrameRef.current != null) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
       }
     };
 
-    const onLoad = () => {
-      if (holdTimeout.current != null) {
-        clearTimeout(holdTimeout.current);
-        holdTimeout.current = null;
-      }
-      if (animationFrame.current != null) {
-        cancelAnimationFrame(animationFrame.current);
-        animationFrame.current = null;
-      }
+    const run = async () => {
+      cleanupSequence();
+      cancelledRef.current = false;
+
+      await waitForStyleLoaded(map);
+      if (cancelledRef.current) return;
 
       if (!path || path.length < 2) {
-        if (m.getLayer("plane")) m.removeLayer("plane");
-        if (m.getLayer("plane-shadow")) m.removeLayer("plane-shadow");
-        if (m.getLayer("plane-fallback")) m.removeLayer("plane-fallback");
-        if (m.getSource("plane-position")) m.removeSource("plane-position");
-        if (m.getLayer("route")) m.removeLayer("route");
-        if (m.getSource("route")) m.removeSource("route");
+        removeLayerIfExists(map, PLANE_LAYER_ID);
+        removeLayerIfExists(map, PLANE_CORE_LAYER_ID);
+        removeLayerIfExists(map, ROUTE_LAYER_ID);
+        removeLayerIfExists(map, SKY_LAYER_ID);
+        removeSourceIfExists(map, PLANE_SOURCE_ID);
+        removeSourceIfExists(map, ROUTE_SOURCE_ID);
+        removeSourceIfExists(map, TERRAIN_SOURCE_ID);
         return;
       }
 
       const [start, end] = [path[0], path[path.length - 1]];
-
-      const routeFeature = turf.greatCircle(turf.point(start), turf.point(end), {
+      const route = turf.greatCircle(turf.point(start), turf.point(end), {
         npoints: ROUTE_POINTS,
       });
-      const rawCoords = routeFeature.geometry?.coordinates;
-      const baseRouteCoords =
-        Array.isArray(rawCoords) && rawCoords.length >= 2
-          ? (rawCoords as [number, number][])
-          : [start, end];
-      const routeCoords = buildLiftedRoute(baseRouteCoords, arcHeightScale);
-      const segmentCount = Math.max(routeCoords.length - 1, 1);
-      const segmentBearings = Array.from({ length: segmentCount }, (_, idx) =>
-        bearingDeg(routeCoords[idx], routeCoords[idx + 1] ?? end)
+      const baseRouteCoords = normalizeGreatCircleCoordinates(
+        route.geometry,
+        start,
+        end
       );
-      const segmentDistances = Array.from({ length: segmentCount }, (_, idx) =>
-        turf.distance(turf.point(routeCoords[idx]), turf.point(routeCoords[idx + 1] ?? end), {
+      const routeCoords = buildLiftedRoute(baseRouteCoords, arcHeightScale);
+      if (routeCoords.length < 2) return;
+
+      const segmentCount = routeCoords.length - 1;
+      const segmentBearings = Array.from({ length: segmentCount }, (_, i) =>
+        bearingDeg(routeCoords[i], routeCoords[i + 1])
+      );
+      const segmentDistances = Array.from({ length: segmentCount }, (_, i) =>
+        turf.distance(turf.point(routeCoords[i]), turf.point(routeCoords[i + 1]), {
           units: "kilometers",
         })
       );
@@ -282,48 +384,45 @@ export default function Map({
       }
       const totalDistance = cumulativeDistances[cumulativeDistances.length - 1] || 1;
 
-      const progressFeature = (coords: [number, number][]) => ({
-        type: "Feature" as const,
-        properties: {},
-        geometry: {
-          type: "LineString" as const,
-          coordinates: coords,
-        },
-      });
+      const routeProgress: [number, number][] = [routeCoords[0], routeCoords[0]];
+      const routeData = lineFeature(routeProgress);
+      const planeData = pointFeature(routeCoords[0], segmentBearings[0] ?? 0);
 
-      const progressLine: [number, number][] = [routeCoords[0], routeCoords[0]];
-      const progressGeojson = progressFeature(progressLine);
-
-      if (m.getSource("route")) {
-        (m.getSource("route") as mapboxgl.GeoJSONSource).setData(progressGeojson);
-      } else {
-        m.addSource("route", {
+      if (!map.getSource(ROUTE_SOURCE_ID)) {
+        map.addSource(ROUTE_SOURCE_ID, {
           type: "geojson",
-          data: progressGeojson,
+          data: routeData,
           lineMetrics: true,
         });
-        m.addLayer({
-          id: "route",
+      } else {
+        (map.getSource(ROUTE_SOURCE_ID) as mapboxgl.GeoJSONSource).setData(routeData);
+      }
+
+      if (!map.getLayer(ROUTE_LAYER_ID)) {
+        map.addLayer({
+          id: ROUTE_LAYER_ID,
           type: "line",
-          source: "route",
+          source: ROUTE_SOURCE_ID,
           layout: {
             "line-join": "round",
             "line-cap": "round",
           },
           paint: {
             "line-color": routeColor,
-            "line-width": ["interpolate", ["linear"], ["zoom"], 3, routeWidth, 7, routeWidth + 1, 12, routeWidth + 2],
+            "line-width": [
+              "interpolate",
+              ["linear"],
+              ["zoom"],
+              3,
+              routeWidth,
+              7,
+              routeWidth + 1,
+              12,
+              routeWidth + 2,
+            ],
             "line-blur": performanceMode ? 0 : 0.4,
             "line-gradient": performanceMode
-              ? [
-                  "interpolate",
-                  ["linear"],
-                  ["line-progress"],
-                  0,
-                  routeColor,
-                  1,
-                  routeColor,
-                ]
+              ? ["interpolate", ["linear"], ["line-progress"], 0, routeColor, 1, routeColor]
               : [
                   "interpolate",
                   ["linear"],
@@ -337,24 +436,73 @@ export default function Map({
         });
       }
 
-      const bounds = routeCoords.reduce(
-        (acc, coord) => acc.extend(coord),
-        new mapboxgl.LngLatBounds(routeCoords[0], routeCoords[0])
-      );
+      if (!map.getSource(PLANE_SOURCE_ID)) {
+        map.addSource(PLANE_SOURCE_ID, {
+          type: "geojson",
+          data: planeData,
+        });
+      } else {
+        (map.getSource(PLANE_SOURCE_ID) as mapboxgl.GeoJSONSource).setData(planeData);
+      }
+
+      if (!map.getLayer(PLANE_CORE_LAYER_ID)) {
+        map.addLayer({
+          id: PLANE_CORE_LAYER_ID,
+          type: "circle",
+          source: PLANE_SOURCE_ID,
+          paint: {
+            "circle-radius": fallbackRadius(planeScale),
+            "circle-color": planeColor,
+            "circle-opacity": 0.55,
+            "circle-stroke-width": 1,
+            "circle-stroke-color": adjustHexColor(planeColor, -40) ?? planeColor,
+          },
+        });
+      }
+
+      const hasPlaneImage = await ensurePlaneImage(map, planeColor);
+      if (cancelledRef.current) return;
+
+      if (hasPlaneImage && !map.getLayer(PLANE_LAYER_ID)) {
+        map.addLayer({
+          id: PLANE_LAYER_ID,
+          type: "symbol",
+          source: PLANE_SOURCE_ID,
+          layout: {
+            "icon-image": PLANE_ICON_ID,
+            "icon-size": planeScale,
+            "icon-allow-overlap": true,
+            "icon-ignore-placement": true,
+            "icon-rotate": ["get", "bearing"],
+            "icon-rotation-alignment": "map",
+            "icon-pitch-alignment": "viewport",
+          },
+          paint: {
+            "icon-opacity": 1,
+          },
+        });
+      }
+
+      if (map.getLayer(ROUTE_LAYER_ID) && map.getLayer(PLANE_CORE_LAYER_ID)) {
+        map.moveLayer(PLANE_CORE_LAYER_ID);
+      }
+      if (map.getLayer(ROUTE_LAYER_ID) && map.getLayer(PLANE_LAYER_ID)) {
+        map.moveLayer(PLANE_LAYER_ID);
+      }
 
       if (!performanceMode) {
-        if (!m.getSource("mapbox-dem")) {
-          m.addSource("mapbox-dem", {
+        if (!map.getSource(TERRAIN_SOURCE_ID)) {
+          map.addSource(TERRAIN_SOURCE_ID, {
             type: "raster-dem",
             url: "mapbox://mapbox.mapbox-terrain-dem-v1",
             tileSize: 512,
             maxzoom: 14,
           });
-          m.setTerrain({ source: "mapbox-dem", exaggeration: 1.2 });
         }
-        if (!m.getLayer("sky")) {
-          m.addLayer({
-            id: "sky",
+        map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1.2 });
+        if (!map.getLayer(SKY_LAYER_ID)) {
+          map.addLayer({
+            id: SKY_LAYER_ID,
             type: "sky",
             paint: {
               "sky-type": "atmosphere",
@@ -364,266 +512,145 @@ export default function Map({
           });
         }
       } else {
-        if (m.getLayer("sky")) m.removeLayer("sky");
-        if (m.getSource("mapbox-dem")) m.removeSource("mapbox-dem");
-        m.setTerrain(null);
+        removeLayerIfExists(map, SKY_LAYER_ID);
+        map.setTerrain(null);
+        removeSourceIfExists(map, TERRAIN_SOURCE_ID);
       }
 
-      // Plane as symbol layer so it is drawn on the map canvas (included in recordings)
-      const planeFeature = (coords: [number, number], bearing: number) => ({
-        type: "Feature" as const,
-        geometry: {
-          type: "Point" as const,
-          coordinates: coords,
-        },
-        properties: {
-          bearing,
-        },
-      });
+      const trackingPitch = performanceMode
+        ? PERFORMANCE_TRACKING_PITCH
+        : TRACKING_PITCH;
+      const trackingBearing = performanceMode
+        ? PERFORMANCE_TRACKING_BEARING
+        : TRACKING_BEARING;
+      const followCamera = !performanceMode;
 
-      const initialBearing = turf.bearing(
-        turf.point(start),
-        turf.point(routeCoords[1] ?? end)
-      );
-
-      if (!m.getSource("plane-position")) {
-        m.addSource("plane-position", {
-          type: "geojson",
-          data: planeFeature(start, initialBearing),
-        });
-      } else {
-        (m.getSource("plane-position") as mapboxgl.GeoJSONSource).setData(
-          planeFeature(start, initialBearing)
-        );
-      }
-
-      if (!m.getLayer("plane-fallback")) {
-        m.addLayer({
-          id: "plane-fallback",
-          type: "circle",
-          source: "plane-position",
-          paint: {
-            "circle-radius": fallbackRadius(planeScale),
-            "circle-color": planeColor,
-            "circle-opacity": 0.9,
-            "circle-stroke-width": 2,
-            "circle-stroke-color": adjustHexColor(planeColor, -40) ?? planeColor,
-          },
-        });
-      }
-
-      const ready = ensurePlaneImage();
-      ready.then(() => {
-        if (cancelled.current) return;
-        if (m.hasImage(PLANE_ICON_ID)) {
-          if (m.getLayer("plane-fallback")) {
-            m.removeLayer("plane-fallback");
-          }
-          if (!m.getLayer("plane")) {
-            m.addLayer({
-              id: "plane",
-              type: "symbol",
-              source: "plane-position",
-              layout: {
-                "icon-image": PLANE_ICON_ID,
-                "icon-size": planeScale,
-                "icon-allow-overlap": true,
-                "icon-ignore-placement": true,
-                "icon-rotate": ["get", "bearing"],
-                "icon-rotation-alignment": "map",
-                "icon-pitch-alignment": "map",
-              },
-              paint: {
-                "icon-opacity": 1,
-                "icon-color": planeColor,
-              },
-            });
-            if (m.getLayer("route")) {
-              m.moveLayer("plane");
-            }
-          }
-          return;
-        }
-        if (!m.getLayer("plane-fallback")) {
-          m.addLayer({
-            id: "plane-fallback",
-            type: "circle",
-            source: "plane-position",
-            paint: {
-              "circle-radius": fallbackRadius(planeScale),
-              "circle-color": planeColor,
-              "circle-opacity": 0.9,
-              "circle-stroke-width": 2,
-              "circle-stroke-color": adjustHexColor(planeColor, -40) ?? planeColor,
-            },
-          });
-          if (m.getLayer("route")) {
-            m.moveLayer("plane-fallback");
-          }
-        }
-      });
-
-      function runPlaneAnimation() {
-        const easeInOut = (t: number) =>
-          t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-        const startTime = performance.now();
-        let segIndex = 0;
-        let lastRouteUpdate = 0;
-        let lastPlaneUpdate = 0;
-        let lastCameraUpdate = 0;
-        let lastStepBucket = -1;
-        const fixedStepMs = fixedFps && fixedFps > 0 ? 1000 / fixedFps : 0;
-        const ROUTE_UPDATE_MS = performanceMode ? 70 : 50;
-        const PLANE_UPDATE_MS = performanceMode ? 33 : 16;
-        const CAMERA_UPDATE_MS = performanceMode ? 33 : 16;
-        const trackingPitch = performanceMode
-          ? PERFORMANCE_TRACKING_PITCH
-          : TRACKING_PITCH;
-        const trackingBearing = performanceMode
-          ? PERFORMANCE_TRACKING_BEARING
-          : TRACKING_BEARING;
-
-        m.jumpTo({
-          center: routeCoords[0] ?? start,
-          zoom: TRACKING_ZOOM,
+      if (followCamera) {
+        map.jumpTo({
+          center: start,
+          zoom: ZOOM_IN_LEVEL,
           pitch: trackingPitch,
           bearing: trackingBearing,
         });
+      } else {
+        const staticBounds = routeCoords.reduce(
+          (acc, coord) => acc.extend(coord),
+          new mapboxgl.LngLatBounds(routeCoords[0], routeCoords[0])
+        );
+        map.fitBounds(staticBounds, {
+          padding: 80,
+          duration: 0,
+          pitch: OUTRO_PITCH,
+          bearing: OUTRO_BEARING,
+        });
+      }
+
+      holdTimeoutRef.current = setTimeout(() => {
+        holdTimeoutRef.current = null;
+        if (cancelledRef.current) return;
+
+        const startTime = performance.now();
+        const stepMs = 1000 / (fixedFps && fixedFps > 0 ? fixedFps : DEFAULT_ANIMATION_FPS);
+        let lastStepBucket = -1;
+        let segIndex = 0;
+        let lastRouteUpdateAt = 0;
+        let lastCameraUpdateAt = 0;
+
+        if (followCamera) {
+          map.jumpTo({
+            center: routeCoords[0],
+            zoom: TRACKING_ZOOM,
+            pitch: trackingPitch,
+            bearing: trackingBearing,
+          });
+        }
 
         const tick = (now: number) => {
-          if (cancelled.current) return;
-          const mapInstance = map.current;
+          if (cancelledRef.current) return;
+          const mapInstance = mapRef.current;
           if (!mapInstance) return;
+
           const rawElapsed = now - startTime;
-          let elapsed = rawElapsed;
-          if (fixedStepMs > 0) {
-            const bucket = Math.floor(rawElapsed / fixedStepMs);
-            if (bucket === lastStepBucket && rawElapsed < flightDurationMs) {
-              animationFrame.current = requestAnimationFrame(tick);
-              return;
-            }
-            lastStepBucket = bucket;
-            elapsed = bucket * fixedStepMs;
+          const bucket = Math.floor(rawElapsed / stepMs);
+          if (bucket === lastStepBucket && rawElapsed < flightDurationMs) {
+            animationFrameRef.current = requestAnimationFrame(tick);
+            return;
           }
+          lastStepBucket = bucket;
+          const elapsed = bucket * stepMs;
+
           const t = Math.min(elapsed / flightDurationMs, 1);
-          const eased = easeInOut(t);
+          const eased = easeInOutCubic(t);
           const targetDistance = eased * totalDistance;
+
           while (
             segIndex < segmentCount - 1 &&
             targetDistance > cumulativeDistances[segIndex + 1]
           ) {
             segIndex += 1;
-            progressLine.splice(progressLine.length - 1, 0, routeCoords[segIndex]);
+            routeProgress.splice(routeProgress.length - 1, 0, routeCoords[segIndex]);
           }
+
           const segStart = cumulativeDistances[segIndex];
           const segLen = segmentDistances[segIndex] || 1;
           const segT = Math.min(Math.max((targetDistance - segStart) / segLen, 0), 1);
-          const a = routeCoords[segIndex] ?? start;
-          const b = routeCoords[segIndex + 1] ?? end;
-          const pos = lerp(a, b, segT);
-          const bearing = segmentBearings[segIndex] ?? 0;
 
-          const nowMs = performance.now();
-          if (
-            nowMs - lastCameraUpdate >= (fixedStepMs > 0 ? fixedStepMs : CAMERA_UPDATE_MS) ||
-            t >= 1
-          ) {
+          const a = routeCoords[segIndex];
+          const b = routeCoords[Math.min(segIndex + 1, routeCoords.length - 1)];
+          const pos = lerp(a, b, segT);
+          const bearing = segmentBearings[segIndex] ?? segmentBearings[segmentBearings.length - 1] ?? 0;
+
+          if (followCamera && (now - lastCameraUpdateAt >= CAMERA_UPDATE_INTERVAL_MS || t >= 1)) {
             mapInstance.setCenter(pos);
-            lastCameraUpdate = nowMs;
+            lastCameraUpdateAt = now;
           }
-          if (
-            nowMs - lastPlaneUpdate >= (fixedStepMs > 0 ? fixedStepMs : PLANE_UPDATE_MS) ||
-            t >= 1
-          ) {
-            (mapInstance.getSource("plane-position") as mapboxgl.GeoJSONSource).setData(
-              planeFeature(pos, bearing)
-            );
-            lastPlaneUpdate = nowMs;
+
+          const planeSource = mapInstance.getSource(PLANE_SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
+          if (planeSource) {
+            planeSource.setData(pointFeature(pos, bearing));
           }
-          if (nowMs - lastRouteUpdate >= ROUTE_UPDATE_MS || segT > 0.95) {
-            progressLine[progressLine.length - 1] = pos;
-            (mapInstance.getSource("route") as mapboxgl.GeoJSONSource).setData(
-              progressGeojson
-            );
-            lastRouteUpdate = nowMs;
+
+          const routeSource = mapInstance.getSource(ROUTE_SOURCE_ID) as mapboxgl.GeoJSONSource | undefined;
+          if (routeSource) {
+            const routeUpdateInterval = performanceMode ? 70 : 45;
+            if (now - lastRouteUpdateAt >= routeUpdateInterval || t >= 1) {
+              routeProgress[routeProgress.length - 1] = pos;
+              routeSource.setData(routeData);
+              lastRouteUpdateAt = now;
+            }
           }
 
           if (t < 1) {
-            animationFrame.current = requestAnimationFrame(tick);
-          } else {
-            animationFrame.current = null;
-            if (cancelled.current) return;
-            // 3) Zoom out smoothly to show the whole journey
-            mapInstance.fitBounds(bounds, {
-              padding: 80,
-              duration: ZOOM_OUT_DURATION_MS,
-              essential: true,
-              pitch: OUTRO_PITCH,
-              bearing: OUTRO_BEARING,
-            });
-            mapInstance.once("moveend", () => onSequenceCompleteRef.current?.());
+            animationFrameRef.current = requestAnimationFrame(tick);
+            return;
           }
-        };
 
-        animationFrame.current = requestAnimationFrame(tick);
-      }
+          animationFrameRef.current = null;
+          if (cancelledRef.current) return;
 
-      let startQueued = false;
-      const queueStart = () => {
-        if (startQueued || cancelled.current) return;
-        startQueued = true;
+          const bounds = routeCoords.reduce(
+            (acc, coord) => acc.extend(coord),
+            new mapboxgl.LngLatBounds(routeCoords[0], routeCoords[0])
+          );
 
-        const startSequence = () => {
-          if (cancelled.current) return;
-          // Pre-render complete, now start cinematic movement.
-          m.jumpTo({
-            center: start,
-            zoom: ZOOM_IN_LEVEL,
-            pitch: performanceMode ? PERFORMANCE_TRACKING_PITCH : TRACKING_PITCH,
-            bearing: performanceMode ? PERFORMANCE_TRACKING_BEARING : TRACKING_BEARING,
+          mapInstance.fitBounds(bounds, {
+            padding: 80,
+            duration: ZOOM_OUT_DURATION_MS,
+            essential: true,
+            pitch: OUTRO_PITCH,
+            bearing: OUTRO_BEARING,
           });
-          holdTimeout.current = setTimeout(() => {
-            holdTimeout.current = null;
-            if (cancelled.current) return;
-            runPlaneAnimation();
-          }, SOURCE_HOLD_MS);
+          mapInstance.once("moveend", () => onSequenceCompleteRef.current?.());
         };
 
-        const afterPaint = () =>
-          requestAnimationFrame(() => requestAnimationFrame(startSequence));
-
-        if (m.areTilesLoaded()) {
-          afterPaint();
-        } else {
-          m.once("idle", afterPaint);
-        }
-      };
-
-      ready.finally(queueStart);
+        animationFrameRef.current = requestAnimationFrame(tick);
+      }, SOURCE_HOLD_MS);
     };
 
-    if (m.isStyleLoaded()) {
-      onLoad();
-    } else {
-      m.on("load", onLoad);
-    }
-    m.on("style.load", onLoad);
-    m.on("styleimagemissing", onStyleImageMissing);
+    void run();
 
     return () => {
-      cancelled.current = true;
-      m.stop();
-      m.off("load", onLoad);
-      m.off("style.load", onLoad);
-      m.off("styleimagemissing", onStyleImageMissing);
-      if (holdTimeout.current != null) {
-        clearTimeout(holdTimeout.current);
-        holdTimeout.current = null;
-      }
-      if (animationFrame.current != null) {
-        cancelAnimationFrame(animationFrame.current);
-        animationFrame.current = null;
-      }
+      cleanupSequence();
     };
   }, [
     path,
@@ -631,47 +658,38 @@ export default function Map({
     arcHeightScale,
     routeColor,
     routeWidth,
+    planeColor,
+    planeScale,
     flightDurationMs,
     performanceMode,
     fixedFps,
-    planeColor,
-    planeScale,
+    mapStyle,
   ]);
 
   useEffect(() => {
-    const m = map.current;
-    if (!m) return;
-    if (m.getLayer("plane")) {
-      m.setPaintProperty("plane", "icon-color", planeColor);
-      m.setLayoutProperty("plane", "icon-size", planeScale);
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (map.getLayer(PLANE_LAYER_ID)) {
+      map.setLayoutProperty(PLANE_LAYER_ID, "icon-size", planeScale);
     }
-    if (m.getLayer("plane-fallback")) {
-      m.setPaintProperty("plane-fallback", "circle-color", planeColor);
-      m.setPaintProperty(
-        "plane-fallback",
+    if (map.getLayer(PLANE_CORE_LAYER_ID)) {
+      map.setPaintProperty(PLANE_CORE_LAYER_ID, "circle-color", planeColor);
+      map.setPaintProperty(
+        PLANE_CORE_LAYER_ID,
         "circle-stroke-color",
         adjustHexColor(planeColor, -40) ?? planeColor
       );
-      m.setPaintProperty("plane-fallback", "circle-radius", fallbackRadius(planeScale));
+      map.setPaintProperty(PLANE_CORE_LAYER_ID, "circle-radius", fallbackRadius(planeScale));
     }
   }, [planeColor, planeScale]);
 
   useEffect(() => {
-    const m = map.current;
-    if (!m) return;
-    planeImageReady.current = null;
-    if (!m.loaded()) {
-      m.once("load", () => m.setStyle(mapStyle));
-      return;
-    }
-    m.setStyle(mapStyle);
-  }, [mapStyle]);
+    const map = mapRef.current;
+    if (!map || !map.getLayer(ROUTE_LAYER_ID)) return;
 
-  useEffect(() => {
-    const m = map.current;
-    if (!m || !m.getLayer("route")) return;
-    m.setPaintProperty("route", "line-color", routeColor);
-    m.setPaintProperty("route", "line-width", [
+    map.setPaintProperty(ROUTE_LAYER_ID, "line-color", routeColor);
+    map.setPaintProperty(ROUTE_LAYER_ID, "line-width", [
       "interpolate",
       ["linear"],
       ["zoom"],
@@ -682,9 +700,10 @@ export default function Map({
       12,
       routeWidth + 2,
     ]);
-    m.setPaintProperty("route", "line-blur", performanceMode ? 0 : 0.4);
+    map.setPaintProperty(ROUTE_LAYER_ID, "line-blur", performanceMode ? 0 : 0.4);
+
     if (performanceMode) {
-      m.setPaintProperty("route", "line-gradient", [
+      map.setPaintProperty(ROUTE_LAYER_ID, "line-gradient", [
         "interpolate",
         ["linear"],
         ["line-progress"],
@@ -695,9 +714,10 @@ export default function Map({
       ]);
       return;
     }
+
     const lighter = adjustHexColor(routeColor, 60) ?? routeColor;
     const darker = adjustHexColor(routeColor, -60) ?? routeColor;
-    m.setPaintProperty("route", "line-gradient", [
+    map.setPaintProperty(ROUTE_LAYER_ID, "line-gradient", [
       "interpolate",
       ["linear"],
       ["line-progress"],

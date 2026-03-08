@@ -425,292 +425,301 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
-      <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
-        <h1 className="mb-8 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+        <h1 className="mb-6 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
           Travel Map Generator
         </h1>
 
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end">
-          <div className="flex-1">
-            <label
-              htmlFor="from"
-              className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-            >
-              From
-            </label>
-            <input
-              id="from"
-              type="text"
-              placeholder="e.g. Delhi"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 placeholder-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500"
+        <div className="grid gap-6 lg:grid-cols-[420px_minmax(0,1fr)] lg:items-start">
+          <section className="space-y-5">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="from"
+                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+                >
+                  From
+                </label>
+                <input
+                  id="from"
+                  type="text"
+                  placeholder="e.g. Delhi"
+                  value={from}
+                  onChange={(e) => setFrom(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 placeholder-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="to"
+                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+                >
+                  To
+                </label>
+                <input
+                  id="to"
+                  type="text"
+                  placeholder="e.g. Tokyo"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 placeholder-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={handleGenerate}
+                disabled={loading}
+                className="rounded-lg bg-blue-600 px-5 py-2.5 font-medium text-white transition-colors hover:bg-blue-700 disabled:pointer-events-none disabled:opacity-60"
+              >
+                {loading ? "Finding route..." : "Generate Route"}
+              </button>
+              <button
+                type="button"
+                onClick={handleRecord}
+                disabled={!path || path.length < 2 || recording}
+                className="rounded-lg border border-zinc-300 bg-white px-5 py-2.5 font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:pointer-events-none disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              >
+                {recording ? "Recording..." : "Record video"}
+              </button>
+            </div>
+
+            <div>
+              <label
+                htmlFor="recorder-mode"
+                className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+              >
+                Recorder mode
+              </label>
+              <select
+                id="recorder-mode"
+                value={recorderMode}
+                onChange={(e) => setRecorderMode(e.target.value as RecorderMode)}
+                disabled={recording}
+                className="mb-4 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+              >
+                <option value="stable-mp4" disabled={!stableMp4Supported}>
+                  Stable MP4 (WebCodecs)
+                </option>
+                <option value="webm">WebM (Compatibility)</option>
+              </select>
+
+              <label
+                htmlFor="record-preset"
+                className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+              >
+                Recording preset
+              </label>
+              <select
+                id="record-preset"
+                value={recordPreset}
+                onChange={(e) => setRecordPreset(e.target.value as RecordPresetKey)}
+                disabled={recording}
+                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+              >
+                <option value="smooth">{RECORD_PRESETS.smooth.label}</option>
+                <option value="quality">{RECORD_PRESETS.quality.label}</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="plane-color"
+                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+                >
+                  Plane color
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="plane-color"
+                    type="color"
+                    value={planeColor}
+                    onChange={(e) => setPlaneColor(e.target.value)}
+                    className="h-10 w-16 rounded border border-zinc-300 bg-white p-1 dark:border-zinc-700 dark:bg-zinc-900"
+                  />
+                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                    {planeColor.toUpperCase()}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <label
+                  htmlFor="plane-size"
+                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+                >
+                  Plane size
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="plane-size"
+                    type="range"
+                    min="0.6"
+                    max="1.6"
+                    step="0.05"
+                    value={planeScale}
+                    onChange={(e) => setPlaneScale(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                    {planeScale.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="route-color"
+                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+                >
+                  Route color
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="route-color"
+                    type="color"
+                    value={routeColor}
+                    onChange={(e) => setRouteColor(e.target.value)}
+                    className="h-10 w-16 rounded border border-zinc-300 bg-white p-1 dark:border-zinc-700 dark:bg-zinc-900"
+                  />
+                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                    {routeColor.toUpperCase()}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <label
+                  htmlFor="route-width"
+                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+                >
+                  Route width
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="route-width"
+                    type="range"
+                    min="1"
+                    max="8"
+                    step="1"
+                    value={routeWidth}
+                    onChange={(e) => setRouteWidth(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                    {routeWidth}px
+                  </span>
+                </div>
+              </div>
+              <div>
+                <label
+                  htmlFor="arc-height"
+                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+                >
+                  Arc height
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="arc-height"
+                    type="range"
+                    min="0.02"
+                    max="0.12"
+                    step="0.01"
+                    value={arcHeightScale}
+                    onChange={(e) => setArcHeightScale(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                    {arcHeightScale.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <label
+                  htmlFor="flight-speed"
+                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+                >
+                  Flight duration
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    id="flight-speed"
+                    type="range"
+                    min="2000"
+                    max="9000"
+                    step="100"
+                    value={flightDurationMs}
+                    onChange={(e) => setFlightDurationMs(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                    {(flightDurationMs / 1000).toFixed(1)}s
+                  </span>
+                </div>
+              </div>
+              <div className="sm:col-span-2">
+                <label
+                  htmlFor="map-style"
+                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
+                >
+                  Map style
+                </label>
+                <select
+                  id="map-style"
+                  value={mapStyle}
+                  onChange={(e) => setMapStyle(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                >
+                  <option value="mapbox://styles/mapbox/light-v11">Light</option>
+                  <option value="mapbox://styles/mapbox/dark-v11">Dark</option>
+                  <option value="mapbox://styles/mapbox/streets-v12">Streets</option>
+                  <option value="mapbox://styles/mapbox/outdoors-v12">Outdoors</option>
+                  <option value="mapbox://styles/mapbox/satellite-streets-v12">
+                    Satellite
+                  </option>
+                </select>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="flex items-center gap-3 text-sm font-medium text-zinc-600 dark:text-zinc-400">
+                  <input
+                    type="checkbox"
+                    checked={performanceMode}
+                    onChange={(e) => setPerformanceMode(e.target.checked)}
+                    className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500 dark:border-zinc-700"
+                  />
+                  Performance mode (disable terrain/sky)
+                </label>
+              </div>
+            </div>
+
+            {error && (
+              <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+                {error}
+              </p>
+            )}
+          </section>
+
+          <aside className="lg:sticky lg:top-6">
+            <Map
+              path={path}
+              replayTrigger={replayTrigger}
+              onMapReady={onMapReady}
+              onSequenceComplete={onSequenceComplete}
+              planeColor={planeColor}
+              planeScale={planeScale}
+              routeColor={routeColor}
+              routeWidth={routeWidth}
+              arcHeightScale={arcHeightScale}
+              flightDurationMs={flightDurationMs}
+              mapStyle={mapStyle}
+              performanceMode={performanceMode}
+              fixedFps={recording ? selectedPreset.fps : null}
             />
-          </div>
-          <div className="flex-1">
-            <label
-              htmlFor="to"
-              className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-            >
-              To
-            </label>
-            <input
-              id="to"
-              type="text"
-              placeholder="e.g. Tokyo"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 placeholder-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500"
-            />
-          </div>
-          <button
-            type="button"
-            onClick={handleGenerate}
-            disabled={loading}
-            className="shrink-0 rounded-lg bg-blue-600 px-5 py-2.5 font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-60 disabled:pointer-events-none"
-          >
-            {loading ? "Finding route…" : "Generate Route"}
-          </button>
-          <button
-            type="button"
-            onClick={handleRecord}
-            disabled={!path || path.length < 2 || recording}
-            className="shrink-0 rounded-lg border border-zinc-300 bg-white px-5 py-2.5 font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:opacity-50 disabled:pointer-events-none dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-          >
-            {recording ? "Recording…" : "Record video"}
-          </button>
+          </aside>
         </div>
-
-        <div className="mb-6">
-          <label
-            htmlFor="recorder-mode"
-            className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-          >
-            Recorder mode
-          </label>
-          <select
-            id="recorder-mode"
-            value={recorderMode}
-            onChange={(e) => setRecorderMode(e.target.value as RecorderMode)}
-            disabled={recording}
-            className="mb-4 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-          >
-            <option value="stable-mp4" disabled={!stableMp4Supported}>
-              Stable MP4 (WebCodecs)
-            </option>
-            <option value="webm">WebM (Compatibility)</option>
-          </select>
-
-          <label
-            htmlFor="record-preset"
-            className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-          >
-            Recording preset
-          </label>
-          <select
-            id="record-preset"
-            value={recordPreset}
-            onChange={(e) => setRecordPreset(e.target.value as RecordPresetKey)}
-            disabled={recording}
-            className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-          >
-            <option value="smooth">{RECORD_PRESETS.smooth.label}</option>
-            <option value="quality">{RECORD_PRESETS.quality.label}</option>
-          </select>
-        </div>
-
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label
-              htmlFor="plane-color"
-              className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-            >
-              Plane color
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                id="plane-color"
-                type="color"
-                value={planeColor}
-                onChange={(e) => setPlaneColor(e.target.value)}
-                className="h-10 w-16 rounded border border-zinc-300 bg-white p-1 dark:border-zinc-700 dark:bg-zinc-900"
-              />
-              <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                {planeColor.toUpperCase()}
-              </span>
-            </div>
-          </div>
-          <div>
-            <label
-              htmlFor="plane-size"
-              className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-            >
-              Plane size
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                id="plane-size"
-                type="range"
-                min="0.6"
-                max="1.6"
-                step="0.05"
-                value={planeScale}
-                onChange={(e) => setPlaneScale(Number(e.target.value))}
-                className="w-full"
-              />
-              <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                {planeScale.toFixed(2)}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label
-              htmlFor="route-color"
-              className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-            >
-              Route color
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                id="route-color"
-                type="color"
-                value={routeColor}
-                onChange={(e) => setRouteColor(e.target.value)}
-                className="h-10 w-16 rounded border border-zinc-300 bg-white p-1 dark:border-zinc-700 dark:bg-zinc-900"
-              />
-              <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                {routeColor.toUpperCase()}
-              </span>
-            </div>
-          </div>
-          <div>
-            <label
-              htmlFor="route-width"
-              className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-            >
-              Route width
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                id="route-width"
-                type="range"
-                min="1"
-                max="8"
-                step="1"
-                value={routeWidth}
-                onChange={(e) => setRouteWidth(Number(e.target.value))}
-                className="w-full"
-              />
-              <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                {routeWidth}px
-              </span>
-            </div>
-          </div>
-          <div>
-            <label
-              htmlFor="arc-height"
-              className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-            >
-              Arc height
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                id="arc-height"
-                type="range"
-                min="0.02"
-                max="0.12"
-                step="0.01"
-                value={arcHeightScale}
-                onChange={(e) => setArcHeightScale(Number(e.target.value))}
-                className="w-full"
-              />
-              <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                {arcHeightScale.toFixed(2)}
-              </span>
-            </div>
-          </div>
-          <div>
-            <label
-              htmlFor="flight-speed"
-              className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-            >
-              Flight duration
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                id="flight-speed"
-                type="range"
-                min="2000"
-                max="9000"
-                step="100"
-                value={flightDurationMs}
-                onChange={(e) => setFlightDurationMs(Number(e.target.value))}
-                className="w-full"
-              />
-              <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                {(flightDurationMs / 1000).toFixed(1)}s
-              </span>
-            </div>
-          </div>
-          <div className="sm:col-span-2">
-            <label
-              htmlFor="map-style"
-              className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-            >
-              Map style
-            </label>
-            <select
-              id="map-style"
-              value={mapStyle}
-              onChange={(e) => setMapStyle(e.target.value)}
-              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-            >
-              <option value="mapbox://styles/mapbox/light-v11">Light</option>
-              <option value="mapbox://styles/mapbox/dark-v11">Dark</option>
-              <option value="mapbox://styles/mapbox/streets-v12">Streets</option>
-              <option value="mapbox://styles/mapbox/outdoors-v12">Outdoors</option>
-              <option value="mapbox://styles/mapbox/satellite-streets-v12">
-                Satellite
-              </option>
-            </select>
-          </div>
-          <div className="sm:col-span-2">
-            <label className="flex items-center gap-3 text-sm font-medium text-zinc-600 dark:text-zinc-400">
-              <input
-                type="checkbox"
-                checked={performanceMode}
-                onChange={(e) => setPerformanceMode(e.target.checked)}
-                className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500 dark:border-zinc-700"
-              />
-              Performance mode (disable terrain/sky)
-            </label>
-          </div>
-        </div>
-
-        {error && (
-          <p className="mb-4 text-sm text-red-600 dark:text-red-400" role="alert">
-            {error}
-          </p>
-        )}
-
-        <Map
-          path={path}
-          replayTrigger={replayTrigger}
-          onMapReady={onMapReady}
-          onSequenceComplete={onSequenceComplete}
-          planeColor={planeColor}
-          planeScale={planeScale}
-          routeColor={routeColor}
-          routeWidth={routeWidth}
-          arcHeightScale={arcHeightScale}
-          flightDurationMs={flightDurationMs}
-          mapStyle={mapStyle}
-          performanceMode={performanceMode}
-          fixedFps={recording ? selectedPreset.fps : null}
-        />
       </div>
     </main>
   );
