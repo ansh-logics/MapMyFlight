@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Travel Map Generator",
-  description: "Draw a path between two locations on the map",
+  title: "Wayfare — Travel Video Studio",
+  description: "Create premium cinematic travel videos from any journey.",
 };
 
 export default function RootLayout({

@@ -1,725 +1,436 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import mapboxgl from "mapbox-gl";
+import { useEffect, useMemo, useRef, useState } from "react";
+import * as turf from "@turf/turf";
 import Map from "@/components/Map";
+import {
+  DEFAULT_TIMINGS,
+  MAP_THEMES,
+  type AspectRatio,
+  type ExportFormat,
+  type FrameRate,
+  type MapTheme,
+  type RenderProgress,
+  type RenderSpecV1,
+  type RoutePoint,
+} from "@/lib/render-spec";
+import {
+  BrowserRenderProvider,
+  downloadRender,
+} from "@/lib/local-render-provider";
 
-const MAPBOX_GEOCODE =
-  "https://api.mapbox.com/geocoding/v5/mapbox.places";
+const MAPBOX_GEOCODE = "https://api.mapbox.com/geocoding/v5/mapbox.places";
+const provider = new BrowserRenderProvider();
 
-async function geocode(
-  query: string,
-  token: string
-): Promise<[number, number] | null> {
+type Step = "route" | "style" | "export";
+
+async function geocode(query: string, token: string): Promise<RoutePoint | null> {
   if (!query.trim()) return null;
   const url = `${MAPBOX_GEOCODE}/${encodeURIComponent(query.trim())}.json?access_token=${token}&limit=1`;
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  const data = await res.json();
-  const feature = data.features?.[0];
-  if (!feature?.center || feature.center.length < 2) return null;
-  return [feature.center[0], feature.center[1]];
+  const response = await fetch(url);
+  if (!response.ok) return null;
+  const data = await response.json();
+  const center = data.features?.[0]?.center;
+  return Array.isArray(center) && center.length >= 2 ? [center[0], center[1]] : null;
 }
 
-const RECORD_LEAD_IN_MS = 500;
+function Icon({
+  name,
+  size = 18,
+}: {
+  name: "pin" | "sparkles" | "export" | "play" | "check" | "film" | "route";
+  size?: number;
+}) {
+  const paths = {
+    pin: <><path d="M12 21s6-5.1 6-11a6 6 0 1 0-12 0c0 5.9 6 11 6 11Z" /><circle cx="12" cy="10" r="2.2" /></>,
+    sparkles: <><path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z" /><path d="m5 13 .8 2.2L8 16l-2.2.8L5 19l-.8-2.2L2 16l2.2-.8L5 13Z" /><path d="m19 14 .7 1.8 1.8.7-1.8.7L19 19l-.7-1.8-1.8-.7 1.8-.7L19 14Z" /></>,
+    export: <><path d="M12 3v12" /><path d="m7 8 5-5 5 5" /><path d="M5 13v7h14v-7" /></>,
+    play: <path d="m9 7 8 5-8 5V7Z" />,
+    check: <path d="m5 12 4 4L19 6" />,
+    film: <><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M7 5v14M17 5v14M3 9h4M17 9h4M3 15h4M17 15h4" /></>,
+    route: <><circle cx="6" cy="18" r="2" /><circle cx="18" cy="6" r="2" /><path d="M8 18c7 0 1-12 8-12" /></>,
+  };
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {paths[name]}
+    </svg>
+  );
+}
 
-const RECORD_PRESETS = {
-  smooth: {
-    label: "MVP Smooth (720p, 30fps)",
-    width: 1280,
-    height: 720,
-    fps: 30,
-    bitrate: 8_000_000,
-  },
-  quality: {
-    label: "High Quality (1080p, 60fps)",
-    width: 1920,
-    height: 1080,
-    fps: 60,
-    bitrate: 16_000_000,
-  },
-} as const;
-
-type RecordPresetKey = keyof typeof RECORD_PRESETS;
-type RecorderMode = "stable-mp4" | "webm";
+function StepButton({
+  active,
+  complete,
+  label,
+  number,
+  onClick,
+}: {
+  active: boolean;
+  complete: boolean;
+  label: string;
+  number: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`step-button ${active ? "is-active" : ""} ${complete ? "is-complete" : ""}`}
+      onClick={onClick}
+    >
+      <span>{complete ? <Icon name="check" size={14} /> : number}</span>
+      {label}
+    </button>
+  );
+}
 
 export default function Home() {
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [path, setPath] = useState<[number, number][] | null>(null);
+  const [activeStep, setActiveStep] = useState<Step>("route");
+  const [from, setFrom] = useState("Delhi");
+  const [to, setTo] = useState("Tokyo");
+  const [coordinates, setCoordinates] = useState<{ from: RoutePoint; to: RoutePoint } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [recording, setRecording] = useState(false);
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("16:9");
+  const [theme, setTheme] = useState<MapTheme>("midnight");
+  const [routeColor, setRouteColor] = useState("#E0B36A");
+  const [vehicleColor, setVehicleColor] = useState("#F5E8D0");
+  const [accentColor, setAccentColor] = useState("#E0B36A");
+  const [routeWidth, setRouteWidth] = useState(4);
+  const [vehicleScale, setVehicleScale] = useState(0.78);
+  const [flightMs, setFlightMs] = useState(6000);
+  const [title, setTitle] = useState("Across the world");
+  const [subtitle, setSubtitle] = useState("One route. A thousand memories.");
+  const [outroTitle, setOutroTitle] = useState("The journey continues");
+  const [brand, setBrand] = useState("Travel Story");
+  const [frameRate, setFrameRate] = useState<FrameRate>(30);
+  const [format, setFormat] = useState<ExportFormat>("mp4");
+  const [mp4Supported, setMp4Supported] = useState(false);
   const [replayTrigger, setReplayTrigger] = useState(0);
-  const [planeColor, setPlaneColor] = useState("#22C55E");
-  const [planeScale, setPlaneScale] = useState(0.8);
-  const [routeColor, setRouteColor] = useState("#3B82F6");
-  const [routeWidth, setRouteWidth] = useState(3);
-  const [arcHeightScale, setArcHeightScale] = useState(0.06);
-  const [flightDurationMs, setFlightDurationMs] = useState(6000);
-  const [mapStyle, setMapStyle] = useState("mapbox://styles/mapbox/light-v11");
-  const [performanceMode, setPerformanceMode] = useState(true);
-  const [recordPreset, setRecordPreset] = useState<RecordPresetKey>("smooth");
-  const [recorderMode, setRecorderMode] = useState<RecorderMode>("webm");
-  const [stableMp4Supported, setStableMp4Supported] = useState(false);
+  const [progress, setProgress] = useState<RenderProgress>({
+    phase: "idle",
+    progress: 0,
+    message: "Ready to export",
+  });
+  const abortRef = useRef<AbortController | null>(null);
 
-  const mapRef = useRef<mapboxgl.Map | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const drawFrameRef = useRef<number | null>(null);
-  const replayTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const recordingStreamRef = useRef<MediaStream | null>(null);
-  const stopRecordingRef = useRef<(() => void) | null>(null);
-
-  const selectedPreset = RECORD_PRESETS[recordPreset];
-
-  const onMapReady = useCallback((map: mapboxgl.Map) => {
-    mapRef.current = map;
-  }, []);
+  const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+  const exporting = ["preparing", "loading-assets", "encoding", "muxing"].includes(progress.phase);
 
   useEffect(() => {
-    const checkStableMp4Support = async () => {
-      const hasWebCodecs =
-        typeof window !== "undefined" &&
-        "VideoEncoder" in window &&
-        "VideoFrame" in window;
-      if (!hasWebCodecs) {
-        setStableMp4Supported(false);
-        setRecorderMode("webm");
+    const detect = async () => {
+      if (!("VideoEncoder" in window)) {
+        setMp4Supported(false);
+        setFormat("webm");
         return;
       }
-
-      const probe = await VideoEncoder.isConfigSupported({
-        codec: "avc1.42001f",
-        width: 1280,
-        height: 720,
-        bitrate: 8_000_000,
+      const support = await VideoEncoder.isConfigSupported({
+        codec: "avc1.4d4028",
+        width: 1920,
+        height: 1080,
         framerate: 30,
-        hardwareAcceleration: "prefer-hardware",
+        bitrate: 18_000_000,
       }).catch(() => null);
-      const supported = !!probe?.supported;
-      setStableMp4Supported(supported);
-      if (!supported) setRecorderMode("webm");
+      setMp4Supported(Boolean(support?.supported));
+      if (!support?.supported) setFormat("webm");
     };
-    void checkStableMp4Support();
+    void detect();
+    return () => abortRef.current?.abort();
   }, []);
 
-  const setInteractionsEnabled = useCallback((map: mapboxgl.Map, enabled: boolean) => {
-    const method = enabled ? "enable" : "disable";
-    map.dragPan?.[method]();
-    map.scrollZoom?.[method]();
-    map.boxZoom?.[method]();
-    map.doubleClickZoom?.[method]();
-    map.touchZoomRotate?.[method]();
-    map.keyboard?.[method]();
-  }, []);
-
-  const startReplayWithLeadIn = useCallback(() => {
-    replayTimeoutRef.current = setTimeout(() => {
-      setReplayTrigger((t) => t + 1);
-      replayTimeoutRef.current = null;
-    }, RECORD_LEAD_IN_MS);
-  }, []);
-
-  const downloadBlob = useCallback((blob: Blob, extension: "mp4" | "webm") => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `travel-map-${Date.now()}.${extension}`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }, []);
-
-  const finishRecording = useCallback(() => {
-    if (drawFrameRef.current != null) {
-      cancelAnimationFrame(drawFrameRef.current);
-      drawFrameRef.current = null;
-    }
-    if (recordingStreamRef.current) {
-      recordingStreamRef.current.getTracks().forEach((track) => track.stop());
-      recordingStreamRef.current = null;
-    }
-    if (replayTimeoutRef.current != null) {
-      clearTimeout(replayTimeoutRef.current);
-      replayTimeoutRef.current = null;
-    }
-    stopRecordingRef.current = null;
-    const map = mapRef.current;
-    if (map) setInteractionsEnabled(map, true);
-  }, [setInteractionsEnabled]);
-
-  const onSequenceComplete = useCallback(() => {
-    stopRecordingRef.current?.();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      stopRecordingRef.current?.();
-      finishRecording();
+  const spec = useMemo<RenderSpecV1 | null>(() => {
+    if (!coordinates) return null;
+    const distanceKm = turf.distance(
+      turf.point(coordinates.from),
+      turf.point(coordinates.to),
+      { units: "kilometers" }
+    );
+    return {
+      version: 1,
+      route: {
+        from: { name: from.trim(), coordinates: coordinates.from },
+        to: { name: to.trim(), coordinates: coordinates.to },
+        distanceKm,
+      },
+      aspectRatio,
+      quality: "1080p",
+      frameRate,
+      timings: { ...DEFAULT_TIMINGS, flightMs },
+      map: {
+        theme,
+        styleUrl: MAP_THEMES[theme].styleUrl,
+        cameraPreset: "cinematic",
+      },
+      appearance: {
+        routeColor,
+        routeWidth,
+        vehicle: "plane",
+        vehicleColor,
+        vehicleScale,
+        accentColor,
+        fontFamily: "Geist",
+      },
+      story: { title, subtitle, outroTitle, brand },
     };
-  }, [finishRecording]);
-
-  const token =
-    typeof process !== "undefined"
-      ? process.env.NEXT_PUBLIC_MAPBOX_TOKEN
-      : undefined;
-
-  const resolveVideoEncoderConfig = useCallback(
-    async (width: number, height: number, fps: number, bitrate: number) => {
-      if (typeof window === "undefined" || !("VideoEncoder" in window)) return null;
-      const candidates = [
-        "avc1.42001f",
-        "avc1.4d401f",
-      ];
-      for (const codec of candidates) {
-        const support = await VideoEncoder.isConfigSupported({
-          codec,
-          width,
-          height,
-          bitrate,
-          framerate: fps,
-          hardwareAcceleration: "prefer-hardware",
-        }).catch(() => null);
-        if (support?.supported) return support.config;
-      }
-      return null;
-    },
-    []
-  );
-
-  const startWebmRecorder = useCallback(
-    (
-      map: mapboxgl.Map,
-      sourceCanvas: HTMLCanvasElement,
-      fps: number,
-      bitrate: number
-    ) => {
-      const stream = sourceCanvas.captureStream(fps);
-      recordingStreamRef.current = stream;
-
-      const options: MediaRecorderOptions = { videoBitsPerSecond: bitrate };
-      if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9")) {
-        options.mimeType = "video/webm;codecs=vp9";
-      } else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8")) {
-        options.mimeType = "video/webm;codecs=vp8";
-      }
-
-      const recorder = new MediaRecorder(stream, options);
-      chunksRef.current = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size) chunksRef.current.push(e.data);
-      };
-      recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: options.mimeType ?? "video/webm" });
-        downloadBlob(blob, "webm");
-        chunksRef.current = [];
-        recorderRef.current = null;
-        setRecording(false);
-        finishRecording();
-      };
-      recorderRef.current = recorder;
-      stopRecordingRef.current = () => {
-        const active = recorderRef.current;
-        if (active && active.state === "recording") active.stop();
-      };
-      setInteractionsEnabled(map, false);
-      recorder.start(100);
-      setRecording(true);
-      startReplayWithLeadIn();
-      return true;
-    },
-    [downloadBlob, finishRecording, setInteractionsEnabled, startReplayWithLeadIn]
-  );
-
-  const startStableMp4Recorder = useCallback(
-    async (
-      map: mapboxgl.Map,
-      sourceCanvas: HTMLCanvasElement,
-      width: number,
-      height: number,
-      fps: number,
-      bitrate: number
-    ) => {
-      if (!stableMp4Supported) return false;
-      const muxerModule = await import("mp4-muxer").catch(() => null);
-      if (!muxerModule) return false;
-      const { ArrayBufferTarget, Muxer } = muxerModule;
-      const encoderConfig = await resolveVideoEncoderConfig(width, height, fps, bitrate);
-      if (!encoderConfig) return false;
-
-      const stagingCanvas = document.createElement("canvas");
-      stagingCanvas.width = width;
-      stagingCanvas.height = height;
-      const stagingCtx = stagingCanvas.getContext("2d", { alpha: false });
-      if (!stagingCtx) return false;
-
-      const codec = encoderConfig.codec;
-      const muxerCodec: "avc" | "vp9" | "av1" =
-        codec.startsWith("avc1") ? "avc" : codec.startsWith("vp09") ? "vp9" : "av1";
-      const target = new ArrayBufferTarget();
-      const muxer = new Muxer({
-        target,
-        fastStart: "in-memory",
-        video: {
-          codec: muxerCodec,
-          width,
-          height,
-          frameRate: fps,
-        },
-      });
-
-      let finalized = false;
-      let encoderErrored = false;
-      const encoder = new VideoEncoder({
-        output: (chunk, meta) => {
-          muxer.addVideoChunk(chunk, meta);
-        },
-        error: () => {
-          encoderErrored = true;
-        },
-      });
-      encoder.configure({
-        ...encoderConfig,
-        width,
-        height,
-        bitrate,
-        framerate: fps,
-      });
-
-      const stopStableRecorder = async () => {
-        if (finalized) return;
-        finalized = true;
-        if (drawFrameRef.current != null) {
-          cancelAnimationFrame(drawFrameRef.current);
-          drawFrameRef.current = null;
-        }
-        try {
-          await encoder.flush();
-        } catch {
-          encoderErrored = true;
-        }
-        try {
-          encoder.close();
-        } catch {
-          // no-op
-        }
-        if (!encoderErrored) {
-          muxer.finalize();
-          downloadBlob(new Blob([target.buffer], { type: "video/mp4" }), "mp4");
-        } else {
-          setError("Stable MP4 export failed. Try WebM mode.");
-        }
-        setRecording(false);
-        finishRecording();
-      };
-
-      const frameDurationMs = 1000 / fps;
-      const frameDurationUs = Math.round(1_000_000 / fps);
-      let nextCaptureAt = performance.now();
-      let frameIndex = 0;
-      const encode = (now: number) => {
-        if (finalized) return;
-        if (now >= nextCaptureAt) {
-          stagingCtx.drawImage(sourceCanvas, 0, 0, width, height);
-          const frame = new VideoFrame(stagingCanvas, {
-            timestamp: frameIndex * frameDurationUs,
-            duration: frameDurationUs,
-          });
-          encoder.encode(frame, { keyFrame: frameIndex % fps === 0 });
-          frame.close();
-          frameIndex += 1;
-          nextCaptureAt += frameDurationMs;
-          if (now > nextCaptureAt + frameDurationMs * 2) {
-            nextCaptureAt = now + frameDurationMs;
-          }
-        }
-        drawFrameRef.current = requestAnimationFrame(encode);
-      };
-
-      stopRecordingRef.current = () => {
-        void stopStableRecorder();
-      };
-      setInteractionsEnabled(map, false);
-      setRecording(true);
-      drawFrameRef.current = requestAnimationFrame(encode);
-      startReplayWithLeadIn();
-      return true;
-    },
-    [
-      downloadBlob,
-      finishRecording,
-      resolveVideoEncoderConfig,
-      setInteractionsEnabled,
-      stableMp4Supported,
-      startReplayWithLeadIn,
-      setError,
-    ]
-  );
-
-  async function handleRecord() {
-    const map = mapRef.current;
-    if (!path || path.length < 2) {
-      setError("Generate a route first.");
-      return;
-    }
-    if (!map) {
-      setError("Map not ready. Wait a moment and try again.");
-      return;
-    }
-
-    setError(null);
-    finishRecording();
-    const sourceCanvas = map.getCanvas();
-    const { fps, bitrate } = selectedPreset;
-
-    if (recorderMode === "stable-mp4") {
-      const started = await startStableMp4Recorder(
-        map,
-        sourceCanvas,
-        selectedPreset.width,
-        selectedPreset.height,
-        fps,
-        bitrate
-      );
-      if (started) return;
-      setError("Stable MP4 is unavailable on this browser. Falling back to WebM.");
-    }
-
-    startWebmRecorder(map, sourceCanvas, fps, bitrate);
-  }
+  }, [
+    coordinates, from, to, aspectRatio, frameRate, flightMs, theme, routeColor,
+    routeWidth, vehicleColor, vehicleScale, accentColor, title, subtitle, outroTitle, brand,
+  ]);
 
   async function handleGenerate() {
     setError(null);
     if (!from.trim() || !to.trim()) {
-      setError("Please enter both From and To locations.");
+      setError("Enter both an origin and destination.");
       return;
     }
     if (!token) {
-      setError("Mapbox token is missing. Add NEXT_PUBLIC_MAPBOX_TOKEN to .env.local");
+      setError("Mapbox token is missing. Add NEXT_PUBLIC_MAPBOX_TOKEN to .env.local.");
       return;
     }
-
     setLoading(true);
     try {
-      const [fromCoords, toCoords] = await Promise.all([
+      const [fromCoordinates, toCoordinates] = await Promise.all([
         geocode(from, token),
         geocode(to, token),
       ]);
-
-      if (!fromCoords) {
-        setError(`Could not find location: "${from}"`);
-        return;
-      }
-      if (!toCoords) {
-        setError(`Could not find location: "${to}"`);
-        return;
-      }
-
-      setPath([fromCoords, toCoords]);
-    } catch {
-      setError("Something went wrong. Check your connection and try again.");
+      if (!fromCoordinates) throw new Error(`We couldn't find “${from}”.`);
+      if (!toCoordinates) throw new Error(`We couldn't find “${to}”.`);
+      setCoordinates({ from: fromCoordinates, to: toCoordinates });
+      setActiveStep("style");
+      setReplayTrigger((value) => value + 1);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to create this route.");
     } finally {
       setLoading(false);
     }
   }
 
+  async function handleExport() {
+    if (!spec || exporting) return;
+    setError(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const result = await provider.renderLocal(spec, {
+        format,
+        signal: controller.signal,
+        onProgress: setProgress,
+      });
+      downloadRender(result, spec.route.from.name, spec.route.to.name);
+    } catch (caught) {
+      if (!(caught instanceof DOMException && caught.name === "AbortError")) {
+        setError(caught instanceof Error ? caught.message : "The export could not be completed.");
+      }
+    } finally {
+      abortRef.current = null;
+    }
+  }
+
+  function applyTheme(nextTheme: MapTheme) {
+    setTheme(nextTheme);
+    if (nextTheme === "midnight") {
+      setRouteColor("#E0B36A");
+      setAccentColor("#E0B36A");
+      setVehicleColor("#F5E8D0");
+    } else {
+      setRouteColor("#C66345");
+      setAccentColor("#C66345");
+      setVehicleColor("#243044");
+    }
+  }
+
   return (
-    <main className="min-h-screen bg-zinc-50 dark:bg-zinc-950">
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
-        <h1 className="mb-6 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-          Travel Map Generator
-        </h1>
-
-        <div className="grid gap-6 lg:grid-cols-[420px_minmax(0,1fr)] lg:items-start">
-          <section className="space-y-5">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <label
-                  htmlFor="from"
-                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-                >
-                  From
-                </label>
-                <input
-                  id="from"
-                  type="text"
-                  placeholder="e.g. Delhi"
-                  value={from}
-                  onChange={(e) => setFrom(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 placeholder-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500"
-                />
-              </div>
-              <div>
-                <label
-                  htmlFor="to"
-                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-                >
-                  To
-                </label>
-                <input
-                  id="to"
-                  type="text"
-                  placeholder="e.g. Tokyo"
-                  value={to}
-                  onChange={(e) => setTo(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 placeholder-zinc-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={handleGenerate}
-                disabled={loading}
-                className="rounded-lg bg-blue-600 px-5 py-2.5 font-medium text-white transition-colors hover:bg-blue-700 disabled:pointer-events-none disabled:opacity-60"
-              >
-                {loading ? "Finding route..." : "Generate Route"}
-              </button>
-              <button
-                type="button"
-                onClick={handleRecord}
-                disabled={!path || path.length < 2 || recording}
-                className="rounded-lg border border-zinc-300 bg-white px-5 py-2.5 font-medium text-zinc-700 transition-colors hover:bg-zinc-50 disabled:pointer-events-none disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-              >
-                {recording ? "Recording..." : "Record video"}
-              </button>
-            </div>
-
-            <div>
-              <label
-                htmlFor="recorder-mode"
-                className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-              >
-                Recorder mode
-              </label>
-              <select
-                id="recorder-mode"
-                value={recorderMode}
-                onChange={(e) => setRecorderMode(e.target.value as RecorderMode)}
-                disabled={recording}
-                className="mb-4 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-              >
-                <option value="stable-mp4" disabled={!stableMp4Supported}>
-                  Stable MP4 (WebCodecs)
-                </option>
-                <option value="webm">WebM (Compatibility)</option>
-              </select>
-
-              <label
-                htmlFor="record-preset"
-                className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-              >
-                Recording preset
-              </label>
-              <select
-                id="record-preset"
-                value={recordPreset}
-                onChange={(e) => setRecordPreset(e.target.value as RecordPresetKey)}
-                disabled={recording}
-                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-              >
-                <option value="smooth">{RECORD_PRESETS.smooth.label}</option>
-                <option value="quality">{RECORD_PRESETS.quality.label}</option>
-              </select>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <label
-                  htmlFor="plane-color"
-                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-                >
-                  Plane color
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    id="plane-color"
-                    type="color"
-                    value={planeColor}
-                    onChange={(e) => setPlaneColor(e.target.value)}
-                    className="h-10 w-16 rounded border border-zinc-300 bg-white p-1 dark:border-zinc-700 dark:bg-zinc-900"
-                  />
-                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {planeColor.toUpperCase()}
-                  </span>
-                </div>
-              </div>
-              <div>
-                <label
-                  htmlFor="plane-size"
-                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-                >
-                  Plane size
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    id="plane-size"
-                    type="range"
-                    min="0.6"
-                    max="1.6"
-                    step="0.05"
-                    value={planeScale}
-                    onChange={(e) => setPlaneScale(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {planeScale.toFixed(2)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <label
-                  htmlFor="route-color"
-                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-                >
-                  Route color
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    id="route-color"
-                    type="color"
-                    value={routeColor}
-                    onChange={(e) => setRouteColor(e.target.value)}
-                    className="h-10 w-16 rounded border border-zinc-300 bg-white p-1 dark:border-zinc-700 dark:bg-zinc-900"
-                  />
-                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {routeColor.toUpperCase()}
-                  </span>
-                </div>
-              </div>
-              <div>
-                <label
-                  htmlFor="route-width"
-                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-                >
-                  Route width
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    id="route-width"
-                    type="range"
-                    min="1"
-                    max="8"
-                    step="1"
-                    value={routeWidth}
-                    onChange={(e) => setRouteWidth(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {routeWidth}px
-                  </span>
-                </div>
-              </div>
-              <div>
-                <label
-                  htmlFor="arc-height"
-                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-                >
-                  Arc height
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    id="arc-height"
-                    type="range"
-                    min="0.02"
-                    max="0.12"
-                    step="0.01"
-                    value={arcHeightScale}
-                    onChange={(e) => setArcHeightScale(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {arcHeightScale.toFixed(2)}
-                  </span>
-                </div>
-              </div>
-              <div>
-                <label
-                  htmlFor="flight-speed"
-                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-                >
-                  Flight duration
-                </label>
-                <div className="flex items-center gap-3">
-                  <input
-                    id="flight-speed"
-                    type="range"
-                    min="2000"
-                    max="9000"
-                    step="100"
-                    value={flightDurationMs}
-                    onChange={(e) => setFlightDurationMs(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                    {(flightDurationMs / 1000).toFixed(1)}s
-                  </span>
-                </div>
-              </div>
-              <div className="sm:col-span-2">
-                <label
-                  htmlFor="map-style"
-                  className="mb-1 block text-sm font-medium text-zinc-600 dark:text-zinc-400"
-                >
-                  Map style
-                </label>
-                <select
-                  id="map-style"
-                  value={mapStyle}
-                  onChange={(e) => setMapStyle(e.target.value)}
-                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-zinc-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-                >
-                  <option value="mapbox://styles/mapbox/light-v11">Light</option>
-                  <option value="mapbox://styles/mapbox/dark-v11">Dark</option>
-                  <option value="mapbox://styles/mapbox/streets-v12">Streets</option>
-                  <option value="mapbox://styles/mapbox/outdoors-v12">Outdoors</option>
-                  <option value="mapbox://styles/mapbox/satellite-streets-v12">
-                    Satellite
-                  </option>
-                </select>
-              </div>
-              <div className="sm:col-span-2">
-                <label className="flex items-center gap-3 text-sm font-medium text-zinc-600 dark:text-zinc-400">
-                  <input
-                    type="checkbox"
-                    checked={performanceMode}
-                    onChange={(e) => setPerformanceMode(e.target.checked)}
-                    className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500 dark:border-zinc-700"
-                  />
-                  Performance mode (disable terrain/sky)
-                </label>
-              </div>
-            </div>
-
-            {error && (
-              <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-                {error}
-              </p>
-            )}
-          </section>
-
-          <aside className="lg:sticky lg:top-6">
-            <Map
-              path={path}
-              replayTrigger={replayTrigger}
-              onMapReady={onMapReady}
-              onSequenceComplete={onSequenceComplete}
-              planeColor={planeColor}
-              planeScale={planeScale}
-              routeColor={routeColor}
-              routeWidth={routeWidth}
-              arcHeightScale={arcHeightScale}
-              flightDurationMs={flightDurationMs}
-              mapStyle={mapStyle}
-              performanceMode={performanceMode}
-              fixedFps={recording ? selectedPreset.fps : null}
-            />
-          </aside>
+    <main className="studio-app">
+      <header className="studio-header">
+        <div className="studio-brand">
+          <span className="studio-brand-mark"><Icon name="route" size={20} /></span>
+          <div>
+            <strong>WAYFARE</strong>
+            <span>Travel video studio</span>
+          </div>
         </div>
+        <div className="studio-header-status">
+          <span className="status-dot" />
+          Browser studio
+        </div>
+      </header>
+
+      <nav className="studio-steps" aria-label="Creation steps">
+        <StepButton active={activeStep === "route"} complete={Boolean(spec)} label="Route" number={1} onClick={() => setActiveStep("route")} />
+        <span className="step-line" />
+        <StepButton active={activeStep === "style"} complete={Boolean(spec) && activeStep === "export"} label="Style" number={2} onClick={() => spec && setActiveStep("style")} />
+        <span className="step-line" />
+        <StepButton active={activeStep === "export"} complete={progress.phase === "completed"} label="Export" number={3} onClick={() => spec && setActiveStep("export")} />
+      </nav>
+
+      <div className="studio-workspace">
+        <section className="studio-sidebar">
+          {activeStep === "route" && (
+            <div className="panel-section">
+              <div className="panel-heading">
+                <span className="panel-icon"><Icon name="pin" /></span>
+                <div><span>Step 01</span><h1>Map your journey</h1></div>
+              </div>
+              <p className="panel-intro">Set the beginning and destination. We’ll compose the cinematic route.</p>
+
+              <label className="field-label" htmlFor="from">Origin</label>
+              <div className="field-with-icon">
+                <Icon name="pin" size={17} />
+                <input id="from" value={from} onChange={(event) => setFrom(event.target.value)} placeholder="e.g. Delhi" />
+              </div>
+              <div className="route-connector"><span /><i /><span /></div>
+              <label className="field-label" htmlFor="to">Destination</label>
+              <div className="field-with-icon">
+                <Icon name="pin" size={17} />
+                <input id="to" value={to} onChange={(event) => setTo(event.target.value)} placeholder="e.g. Tokyo" />
+              </div>
+              <button className="primary-action" type="button" onClick={handleGenerate} disabled={loading}>
+                <Icon name="sparkles" />
+                {loading ? "Crafting your route…" : spec ? "Update journey" : "Create journey"}
+              </button>
+              <p className="action-hint">Map data provided by Mapbox and OpenStreetMap.</p>
+            </div>
+          )}
+
+          {activeStep === "style" && spec && (
+            <div className="panel-section">
+              <div className="panel-heading">
+                <span className="panel-icon"><Icon name="sparkles" /></span>
+                <div><span>Step 02</span><h1>Direct the story</h1></div>
+              </div>
+              <p className="panel-intro">Choose a visual world and shape the titles your audience will remember.</p>
+
+              <span className="field-label">Cinematic theme</span>
+              <div className="theme-grid">
+                {(Object.keys(MAP_THEMES) as MapTheme[]).map((themeKey) => {
+                  const item = MAP_THEMES[themeKey];
+                  return (
+                    <button key={themeKey} type="button" className={`theme-card ${theme === themeKey ? "is-selected" : ""}`} onClick={() => applyTheme(themeKey)}>
+                      <span className="theme-swatch">
+                        {item.swatches.map((color) => <i key={color} style={{ background: color }} />)}
+                      </span>
+                      <strong>{item.name}</strong>
+                      <small>{item.description}</small>
+                      {theme === themeKey && <span className="theme-check"><Icon name="check" size={12} /></span>}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <label className="field-label" htmlFor="story-title">Story title</label>
+              <input className="studio-input" id="story-title" value={title} onChange={(event) => setTitle(event.target.value)} />
+              <label className="field-label" htmlFor="story-subtitle">Subtitle</label>
+              <input className="studio-input" id="story-subtitle" value={subtitle} onChange={(event) => setSubtitle(event.target.value)} />
+
+              <details className="advanced-panel">
+                <summary>Advanced styling <span>+</span></summary>
+                <div className="advanced-content">
+                  <div className="color-row">
+                    <label>Route <input type="color" value={routeColor} onChange={(event) => setRouteColor(event.target.value)} /></label>
+                    <label>Vehicle <input type="color" value={vehicleColor} onChange={(event) => setVehicleColor(event.target.value)} /></label>
+                    <label>Accent <input type="color" value={accentColor} onChange={(event) => setAccentColor(event.target.value)} /></label>
+                  </div>
+                  <label className="range-label">Route width <span>{routeWidth}px</span></label>
+                  <input type="range" min="2" max="8" step="0.5" value={routeWidth} onChange={(event) => setRouteWidth(Number(event.target.value))} />
+                  <label className="range-label">Vehicle size <span>{vehicleScale.toFixed(2)}</span></label>
+                  <input type="range" min="0.55" max="1.25" step="0.05" value={vehicleScale} onChange={(event) => setVehicleScale(Number(event.target.value))} />
+                  <label className="range-label">Flight scene <span>{(flightMs / 1000).toFixed(1)}s</span></label>
+                  <input type="range" min="3500" max="9000" step="250" value={flightMs} onChange={(event) => setFlightMs(Number(event.target.value))} />
+                  <label className="field-label" htmlFor="outro-title">Outro title</label>
+                  <input className="studio-input" id="outro-title" value={outroTitle} onChange={(event) => setOutroTitle(event.target.value)} />
+                  <label className="field-label" htmlFor="brand">Brand label</label>
+                  <input className="studio-input" id="brand" value={brand} onChange={(event) => setBrand(event.target.value)} />
+                </div>
+              </details>
+
+              <button className="primary-action" type="button" onClick={() => setActiveStep("export")}>
+                Continue to export <span aria-hidden="true">→</span>
+              </button>
+            </div>
+          )}
+
+          {activeStep === "export" && spec && (
+            <div className="panel-section">
+              <div className="panel-heading">
+                <span className="panel-icon"><Icon name="export" /></span>
+                <div><span>Step 03</span><h1>Export your film</h1></div>
+              </div>
+              <p className="panel-intro">Render every frame at its true output resolution for crisp maps, type, and motion.</p>
+
+              <span className="field-label">Quality</span>
+              <div className="quality-list">
+                <button type="button" className="quality-card is-selected">
+                  <span><strong>Full HD</strong><small>True 1080p · Local render</small></span>
+                  <b>1920 × 1080</b><i><Icon name="check" size={12} /></i>
+                </button>
+                <button type="button" className="quality-card" disabled>
+                  <span><strong>4K Cloud</strong><small>Premium render provider</small></span>
+                  <b>Coming next</b><em>Cloud</em>
+                </button>
+              </div>
+
+              <div className="export-options">
+                <div>
+                  <label className="field-label" htmlFor="fps">Frame rate</label>
+                  <select id="fps" value={frameRate} onChange={(event) => setFrameRate(Number(event.target.value) as FrameRate)} disabled={exporting}>
+                    <option value="30">30 fps · Smooth</option>
+                    <option value="60">60 fps · Ultra smooth</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="format">Format</label>
+                  <select id="format" value={format} onChange={(event) => setFormat(event.target.value as ExportFormat)} disabled={exporting}>
+                    <option value="mp4" disabled={!mp4Supported}>MP4 · Premium</option>
+                    <option value="webm">WebM · Compatible</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className={`render-status ${exporting ? "is-rendering" : ""}`}>
+                <div className="render-status-row">
+                  <span><Icon name="film" size={16} /> {progress.message}</span>
+                  <strong>{Math.round(progress.progress * 100)}%</strong>
+                </div>
+                <div className="progress-track"><i style={{ width: `${progress.progress * 100}%` }} /></div>
+              </div>
+
+              {exporting ? (
+                <button className="secondary-action" type="button" onClick={() => abortRef.current?.abort()}>Cancel export</button>
+              ) : (
+                <button className="primary-action export-action" type="button" onClick={handleExport}>
+                  <Icon name="export" /> Export {format.toUpperCase()} in 1080p
+                </button>
+              )}
+              {!mp4Supported && <p className="action-hint">This browser does not expose H.264 WebCodecs, so the compatibility WebM renderer is selected.</p>}
+            </div>
+          )}
+
+          {error && <div className="studio-error" role="alert">{error}</div>}
+        </section>
+
+        <section className="preview-workspace">
+          <div className="preview-toolbar">
+            <div>
+              <span className="preview-kicker">Live composition</span>
+              <strong>{spec ? `${spec.route.from.name} → ${spec.route.to.name}` : "Untitled journey"}</strong>
+            </div>
+            <div className="preview-actions">
+              <div className="ratio-toggle" aria-label="Video aspect ratio">
+                <button type="button" className={aspectRatio === "16:9" ? "is-active" : ""} onClick={() => setAspectRatio("16:9")}>16:9</button>
+                <button type="button" className={aspectRatio === "9:16" ? "is-active" : ""} onClick={() => setAspectRatio("9:16")}>9:16</button>
+              </div>
+              <button type="button" className="replay-button" onClick={() => setReplayTrigger((value) => value + 1)} disabled={!spec}>
+                <Icon name="play" size={15} /> Replay
+              </button>
+            </div>
+          </div>
+
+          <div className={`preview-stage ratio-${aspectRatio.replace(":", "-")}`}>
+            <Map spec={spec} replayTrigger={replayTrigger} />
+          </div>
+          <div className="preview-note">
+            <span><i /> Preview quality</span>
+            <p>Exports use a separate full-resolution 1080p render stage.</p>
+          </div>
+        </section>
       </div>
     </main>
   );
