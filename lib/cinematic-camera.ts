@@ -1,7 +1,6 @@
 import type { AspectRatio, RoutePoint } from "./render-spec";
 import { bearingBetween, pointAlongRoute } from "./route-geometry";
 import type { TimelineFrame } from "./timeline";
-import { easeInOutCubic, easeOutCubic } from "./timeline";
 
 export type OverviewCamera = {
   center: RoutePoint;
@@ -40,64 +39,73 @@ function interpolateBearing(start: number, end: number, progress: number) {
   return start + delta * progress;
 }
 
+/**
+ * Hermite smoothstep — returns 0 when x ≤ edge0, 1 when x ≥ edge1,
+ * and a smooth S-curve with zero first-derivative at both edges.
+ */
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Single continuous "pan shot" camera.
+ *
+ * Instead of switching between discrete scene-specific camera behaviours
+ * (which causes visible snaps at every scene boundary), this function
+ * blends smoothly between an overview pose and a route-tracking pose
+ * using a single blend curve driven by `totalProgress`.
+ *
+ * The result is one unbroken camera move:
+ *   overview → zoom-in → track the plane → zoom-out → overview
+ */
 export function getCinematicCameraPose(
   route: RoutePoint[],
   timeline: TimelineFrame,
   overview: OverviewCamera,
   aspectRatio: AspectRatio
 ): CinematicCameraPose {
-  const start = route[0] ?? overview.center;
-  const end = route[route.length - 1] ?? overview.center;
   const portrait = aspectRatio === "9:16";
-  const trackingZoom = Math.max(overview.zoom + (portrait ? 1.15 : 1.75), portrait ? 3.65 : 4.2);
-  const trackingPitch = portrait ? 52 : 58;
+  const trackingZoom = Math.max(
+    overview.zoom + (portrait ? 1.15 : 1.75),
+    portrait ? 3.65 : 4.2
+  );
+  const trackingPitch = portrait ? 48 : 54;
 
-  if (timeline.scene === "intro") {
-    return { ...overview, pitch: 0, bearing: 0 };
-  }
+  // totalProgress runs 0→1 linearly over the entire animation duration.
+  const tp = timeline.totalProgress;
+  // routeProgress is the eased 0→1 position of the plane along the route.
+  const rp = timeline.routeProgress;
 
-  if (timeline.scene === "origin") {
-    const progress = easeOutCubic(timeline.sceneProgress);
-    const firstLeg = route[Math.min(4, route.length - 1)] ?? end;
-    const heading = bearingBetween(start, firstLeg);
-    return {
-      center: interpolatePoint(overview.center, start, progress),
-      zoom: lerp(overview.zoom, trackingZoom, progress),
-      pitch: lerp(0, trackingPitch, progress),
-      bearing: interpolateBearing(0, heading - 16, progress),
-    };
-  }
+  // ── Blend curve ─────────────────────────────────────────────
+  // Smoothly ramp from 0 (overview) to 1 (tracking) during the
+  // first ~22% of the total time, and back down during the last ~20%.
+  const blendIn = smoothstep(0, 0.22, tp);
+  const blendOut = smoothstep(1.0, 0.80, tp);
+  const blend = Math.min(blendIn, blendOut);
 
-  if (timeline.scene === "flight") {
-    const current = pointAlongRoute(route, timeline.routeProgress);
-    const lookAhead = pointAlongRoute(route, Math.min(1, timeline.routeProgress + 0.035));
-    const next = route[Math.min(current.index + 1, route.length - 1)] ?? end;
-    const heading = bearingBetween(route[current.index] ?? start, next);
-    return {
-      center: interpolatePoint(current.point, lookAhead.point, 0.28),
-      zoom: trackingZoom + Math.sin(Math.PI * timeline.sceneProgress) * 0.34,
-      pitch: trackingPitch,
-      bearing: heading - 16,
-    };
-  }
+  // ── Route position & heading ────────────────────────────────
+  const { point: routePoint } = pointAlongRoute(route, rp);
+  const behindPoint = pointAlongRoute(route, Math.max(0, rp - 0.03)).point;
+  const aheadPoint = pointAlongRoute(route, Math.min(1, rp + 0.03)).point;
 
-  if (timeline.scene === "destination") {
-    const finalLeg = route[Math.max(0, route.length - 5)] ?? start;
-    const heading = bearingBetween(finalLeg, end);
-    const pullback = easeInOutCubic(Math.max(0, (timeline.sceneProgress - 0.45) / 0.55));
-    return {
-      center: interpolatePoint(end, overview.center, pullback),
-      zoom: lerp(trackingZoom + 0.22, overview.zoom + 0.35, pullback),
-      pitch: lerp(trackingPitch, 18, pullback),
-      bearing: interpolateBearing(heading - 16, 0, pullback),
-    };
-  }
+  // Bearing from a look-behind to a look-ahead for a smooth heading
+  const heading = bearingBetween(behindPoint, aheadPoint);
 
-  const progress = easeInOutCubic(timeline.sceneProgress);
+  // Tracking center sits slightly ahead of the plane
+  const trackingCenter: RoutePoint = [
+    routePoint[0] + (aheadPoint[0] - routePoint[0]) * 0.25,
+    routePoint[1] + (aheadPoint[1] - routePoint[1]) * 0.25,
+  ];
+
+  // Subtle zoom wave during the tracked phase for a cinematic feel
+  const trackPhase = Math.max(0, Math.min(1, (tp - 0.22) / 0.58));
+  const zoomWave = Math.sin(Math.PI * trackPhase) * 0.28;
+
   return {
-    center: interpolatePoint(end, overview.center, progress),
-    zoom: lerp(overview.zoom + 0.35, overview.zoom, progress),
-    pitch: lerp(18, 0, progress),
-    bearing: 0,
+    center: interpolatePoint(overview.center, trackingCenter, blend),
+    zoom: lerp(overview.zoom, trackingZoom + zoomWave, blend),
+    pitch: lerp(0, trackingPitch, blend),
+    bearing: interpolateBearing(0, heading, blend),
   };
 }

@@ -12,7 +12,6 @@ import type {
 } from "./render-spec";
 import { getOutputSize, getTotalDuration } from "./render-spec";
 import {
-  bearingBetween,
   createGreatCircle,
   pointAlongRoute,
 } from "./route-geometry";
@@ -271,70 +270,43 @@ function drawFrame(frame: FrameContext, timeMs: number) {
   drawLabel(ctx, spec.route.to.name, destination.x, destination.y - 34 * unit, unit, "right");
 
   if (timeline.scene !== "intro" && timeline.scene !== "outro") {
-    const next = route[Math.min(active.index + 1, route.length - 1)];
+    // Compute bearing from screen-projected coordinates so the plane nose
+    // matches the visual route direction (accounts for camera rotation/pitch).
+    const lookBehind = pointAlongRoute(route, Math.max(0, timeline.routeProgress - 0.018));
+    const lookAhead = pointAlongRoute(route, Math.min(1, timeline.routeProgress + 0.018));
+    const behindScreen = map.project(lookBehind.point);
+    const aheadScreen = map.project(lookAhead.point);
+    const dx = aheadScreen.x - behindScreen.x;
+    const dy = aheadScreen.y - behindScreen.y;
+    // Canvas Y is inverted (down = positive), so negate dy for bearing math
+    const screenBearing = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
+
     drawPlane(
       ctx,
       activeScreen.x,
       activeScreen.y,
-      bearingBetween(route[active.index], next),
+      screenBearing,
       spec.appearance.vehicleColor,
       spec.appearance.vehicleScale * unit
     );
   }
 
-  if (timeline.scene === "intro" || timeline.scene === "outro") {
-    ctx.fillStyle = `rgba(4, 8, 16, ${0.72 + timeline.overlayOpacity * 0.15})`;
-    ctx.fillRect(0, 0, width, height);
-    ctx.textAlign = "center";
-    ctx.fillStyle = spec.appearance.accentColor;
+  // Distance badge
+  if (timeline.scene !== "intro" && timeline.scene !== "outro") {
+    const badgeText = `${Math.round(spec.route.distanceKm).toLocaleString()} km`;
     ctx.font = `600 ${18 * unit}px "Geist", sans-serif`;
-    ctx.fillText(
-      timeline.scene === "intro" ? "A JOURNEY FROM" : spec.story.brand.toUpperCase(),
-      width / 2,
-      height * 0.38
-    );
-    ctx.fillStyle = "#ffffff";
-    ctx.font = `600 ${portrait ? 62 * unit : 68 * unit}px "Geist", sans-serif`;
-    const title =
-      timeline.scene === "intro"
-        ? `${spec.route.from.name}  —  ${spec.route.to.name}`
-        : spec.story.outroTitle;
-    ctx.fillText(title, width / 2, height * 0.48);
-    ctx.fillStyle = "rgba(255,255,255,.7)";
-    ctx.font = `400 ${22 * unit}px "Geist", sans-serif`;
-    ctx.fillText(
-      timeline.scene === "intro"
-        ? spec.story.subtitle
-        : `${spec.route.from.name}  →  ${spec.route.to.name}`,
-      width / 2,
-      height * 0.55
-    );
-  } else {
+    const badgeWidth = ctx.measureText(badgeText).width + 28 * unit;
+    const badgeHeight = 38 * unit;
+    const badgeX = safeX;
+    const badgeY = height - safeX - badgeHeight;
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,.42)";
+    roundedRect(ctx, badgeX, badgeY, badgeWidth, badgeHeight, 8 * unit);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,.88)";
     ctx.textAlign = "left";
-    ctx.fillStyle = "rgba(255,255,255,.64)";
-    ctx.font = `500 ${16 * unit}px "Geist", sans-serif`;
-    ctx.fillText(
-      timeline.scene === "destination" ? "ARRIVED IN" : "JOURNEY TO",
-      safeX,
-      portrait ? height * 0.11 : height * 0.12
-    );
-    ctx.fillStyle = "#ffffff";
-    ctx.font = `600 ${portrait ? 48 * unit : 44 * unit}px "Geist", sans-serif`;
-    ctx.fillText(
-      timeline.scene === "origin" ? spec.route.from.name : spec.route.to.name,
-      safeX,
-      portrait ? height * 0.15 : height * 0.17
-    );
-
-    const factY = portrait ? height * 0.86 : height * 0.84;
-    ctx.font = `500 ${15 * unit}px "Geist", sans-serif`;
-    ctx.fillStyle = "rgba(255,255,255,.58)";
-    ctx.fillText("DISTANCE", safeX, factY);
-    ctx.fillText("FLIGHT", safeX + 190 * unit, factY);
-    ctx.font = `600 ${22 * unit}px "Geist", sans-serif`;
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(`${Math.round(spec.route.distanceKm).toLocaleString()} km`, safeX, factY + 34 * unit);
-    ctx.fillText(`${Math.round(spec.timings.flightMs / 1000)} sec`, safeX + 190 * unit, factY + 34 * unit);
+    ctx.fillText(badgeText, badgeX + 14 * unit, badgeY + 25 * unit);
+    ctx.restore();
   }
 
   ctx.fillStyle = "rgba(255,255,255,.72)";
@@ -407,11 +379,38 @@ async function createRenderMap(
   });
   await waitForMap(map, signal);
   const center = map.getCenter();
+  const overview = { center: [center.lng, center.lat] as [number, number], zoom: map.getZoom() };
+
+  // Pre-warm: walk the camera along the route at tracking zoom so all
+  // tiles are cached before the animation begins. Without this, zoomed-in
+  // frames render with blank/dark patches as tiles stream in.
+  const portrait = spec.aspectRatio === "9:16";
+  const trackingZoom = Math.max(overview.zoom + (portrait ? 1.15 : 1.75), portrait ? 3.65 : 4.2);
+  const PREWARM_STEPS = 8;
+  for (let i = 0; i <= PREWARM_STEPS; i++) {
+    throwIfAborted(signal);
+    const t = i / PREWARM_STEPS;
+    const idx = Math.min(route.length - 1, Math.round(t * (route.length - 1)));
+    map.jumpTo({
+      center: route[idx],
+      zoom: trackingZoom,
+      pitch: portrait ? 48 : 54,
+      bearing: 0,
+    });
+    map.triggerRepaint();
+    await waitForMap(map, signal);
+  }
+
+  // Return to overview for the animation start
+  map.jumpTo({ ...overview, pitch: 0, bearing: 0 });
+  map.triggerRepaint();
+  await waitForMap(map, signal);
+
   return {
     map,
     container,
     route,
-    overview: { center: [center.lng, center.lat] as [number, number], zoom: map.getZoom() },
+    overview,
   };
 }
 

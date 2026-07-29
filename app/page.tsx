@@ -100,7 +100,7 @@ export default function Home() {
   const [title, setTitle] = useState("Across the world");
   const [subtitle, setSubtitle] = useState("One route. A thousand memories.");
   const [outroTitle, setOutroTitle] = useState("The journey continues");
-  const [brand, setBrand] = useState("Travel Story");
+  const [brand, setBrand] = useState("MapMyFlight");
   const [frameRate, setFrameRate] = useState<FrameRate>(30);
   const [format, setFormat] = useState<ExportFormat>("mp4");
   const [mp4Supported, setMp4Supported] = useState(false);
@@ -215,6 +215,7 @@ export default function Home() {
         onProgress: setProgress,
       });
       downloadRender(result, spec.route.from.name, spec.route.to.name);
+      setReplayTrigger((value) => value + 1);
     } catch (caught) {
       if (!(caught instanceof DOMException && caught.name === "AbortError")) {
         setError(caught instanceof Error ? caught.message : "The export could not be completed.");
@@ -243,13 +244,9 @@ export default function Home() {
         <div className="studio-brand">
           <span className="studio-brand-mark"><Icon name="route" size={20} /></span>
           <div>
-            <strong>WAYFARE</strong>
+            <strong>MapMyFlight</strong>
             <span>Travel video studio</span>
           </div>
-        </div>
-        <div className="studio-header-status">
-          <span className="status-dot" />
-          Browser studio
         </div>
       </header>
 
@@ -315,11 +312,6 @@ export default function Home() {
                 })}
               </div>
 
-              <label className="field-label" htmlFor="story-title">Story title</label>
-              <input className="studio-input" id="story-title" value={title} onChange={(event) => setTitle(event.target.value)} />
-              <label className="field-label" htmlFor="story-subtitle">Subtitle</label>
-              <input className="studio-input" id="story-subtitle" value={subtitle} onChange={(event) => setSubtitle(event.target.value)} />
-
               <details className="advanced-panel">
                 <summary>Advanced styling <span>+</span></summary>
                 <div className="advanced-content">
@@ -334,10 +326,6 @@ export default function Home() {
                   <input type="range" min="0.55" max="1.25" step="0.05" value={vehicleScale} onChange={(event) => setVehicleScale(Number(event.target.value))} />
                   <label className="range-label">Flight scene <span>{(flightMs / 1000).toFixed(1)}s</span></label>
                   <input type="range" min="3500" max="9000" step="250" value={flightMs} onChange={(event) => setFlightMs(Number(event.target.value))} />
-                  <label className="field-label" htmlFor="outro-title">Outro title</label>
-                  <input className="studio-input" id="outro-title" value={outroTitle} onChange={(event) => setOutroTitle(event.target.value)} />
-                  <label className="field-label" htmlFor="brand">Brand label</label>
-                  <input className="studio-input" id="brand" value={brand} onChange={(event) => setBrand(event.target.value)} />
                 </div>
               </details>
 
@@ -372,7 +360,7 @@ export default function Home() {
                   <label className="field-label" htmlFor="fps">Frame rate</label>
                   <select id="fps" value={frameRate} onChange={(event) => setFrameRate(Number(event.target.value) as FrameRate)} disabled={exporting}>
                     <option value="30">30 fps · Smooth</option>
-                    <option value="60">60 fps · Ultra smooth</option>
+                    <option value="60" disabled>60 fps · Coming soon</option>
                   </select>
                 </div>
                 <div>
@@ -404,6 +392,10 @@ export default function Home() {
           )}
 
           {error && <div className="studio-error" role="alert">{error}</div>}
+
+          <div style={{ marginTop: 'auto', padding: '2rem 1.5rem', textAlign: 'center', opacity: 0.5, fontSize: '0.85rem', fontWeight: 500 }}>
+            Made with ❤️ by Ansh
+          </div>
         </section>
 
         <section className="preview-workspace">

@@ -6,10 +6,10 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import type { RenderSpecV1 } from "@/lib/render-spec";
 import { getTotalDuration } from "@/lib/render-spec";
 import {
-  bearingBetween,
   createGreatCircle,
   pointAlongRoute,
   routeGeoJson,
+  smoothMercatorBearing,
 } from "@/lib/route-geometry";
 import { evaluateTimeline } from "@/lib/timeline";
 import {
@@ -24,6 +24,7 @@ const ROUTE_ACTIVE = "studio-route-active";
 const ROUTE_SOURCE = "studio-route";
 const ACTIVE_SOURCE = "studio-active-route";
 const POINTS_SOURCE = "studio-points";
+const POINT_LABELS = "studio-point-labels";
 const PLANE_SOURCE = "studio-plane";
 const PLANE_LAYER = "studio-plane-layer";
 const PLANE_IMAGE = "studio-plane-image";
@@ -78,9 +79,10 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
   const frameRef = useRef<number | null>(null);
   const timeRef = useRef(0);
   const onCompleteRef = useRef(onSequenceComplete);
+  const progressBarRef = useRef<HTMLDivElement>(null);
   const [readyVersion, setReadyVersion] = useState(0);
-  const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [isPrewarming, setIsPrewarming] = useState(false);
   const styleUrl = spec?.map.styleUrl;
   const route = useMemo(
     () =>
@@ -89,12 +91,12 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
         : [],
     [spec]
   );
-  const timeline = spec ? evaluateTimeline(spec, timeMs) : null;
 
   useEffect(() => {
     onCompleteRef.current = onSequenceComplete;
   }, [onSequenceComplete]);
 
+  // Initialize the map once
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return;
     const map = new mapboxgl.Map({
@@ -119,6 +121,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
     };
   }, []);
 
+  // Handle style changes
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleUrl) return;
@@ -128,6 +131,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
     map.once("style.load", () => setReadyVersion((value) => value + 1));
   }, [styleUrl]);
 
+  // Setup sources, layers, and pre-warm the map
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !spec || route.length < 2) return;
@@ -149,8 +153,16 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
         data: {
           type: "FeatureCollection",
           features: [
-            { ...pointFeature(route[0]), properties: { kind: "origin" } },
-            { ...pointFeature(route[route.length - 1]), properties: { kind: "destination" } },
+            {
+              type: "Feature",
+              properties: { kind: "origin", name: spec.route.from.name },
+              geometry: { type: "Point", coordinates: route[0] },
+            },
+            {
+              type: "Feature",
+              properties: { kind: "destination", name: spec.route.to.name },
+              geometry: { type: "Point", coordinates: route[route.length - 1] },
+            },
           ],
         },
       });
@@ -175,6 +187,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
         "star-intensity": spec.map.theme === "midnight" ? 0.12 : 0,
       });
 
+      // Route ghost line (full route, low opacity)
       map.addLayer({
         id: ROUTE_GHOST,
         type: "line",
@@ -186,6 +199,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
           "line-width": spec.appearance.routeWidth,
         },
       });
+      // Active route line (progress)
       map.addLayer({
         id: ROUTE_ACTIVE,
         type: "line",
@@ -197,6 +211,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
           "line-blur": 0.35,
         },
       });
+      // Marker halos
       map.addLayer({
         id: "studio-point-halo",
         type: "circle",
@@ -207,6 +222,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
           "circle-opacity": 0.18,
         },
       });
+      // Marker dots
       map.addLayer({
         id: "studio-points",
         type: "circle",
@@ -218,6 +234,27 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
           "circle-stroke-width": 1.5,
         },
       });
+      // Place name labels on the map
+      map.addLayer({
+        id: POINT_LABELS,
+        type: "symbol",
+        source: POINTS_SOURCE,
+        layout: {
+          "text-field": ["get", "name"],
+          "text-font": ["DIN Pro Medium", "Arial Unicode MS Regular"],
+          "text-size": 14,
+          "text-anchor": "top",
+          "text-offset": [0, 1.2],
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+        },
+        paint: {
+          "text-color": "#ffffff",
+          "text-halo-color": spec.map.theme === "midnight" ? "#0a0f1a" : "#f5f0e8",
+          "text-halo-width": 2,
+        },
+      });
+      // Plane icon
       if (await installPlane(map, spec.appearance.vehicleColor)) {
         map.addLayer({
           id: PLANE_LAYER,
@@ -230,6 +267,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
             "icon-ignore-placement": true,
             "icon-rotate": ["get", "bearing"],
             "icon-rotation-alignment": "map",
+            "icon-pitch-alignment": "map",
           },
         });
       }
@@ -249,10 +287,57 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
       map.setCenter([center.lng, center.lat]);
       overviewRef.current = {
         center: [center.lng, center.lat],
-        zoom: map.getZoom(),
+        zoom: map.getZoom() - (portrait ? 0.3 : 0),
       };
+
+      // Pre-warm: wait for overview tiles first
+      setIsPrewarming(true);
+      await new Promise<void>((resolve) => {
+        if (cancelled) { resolve(); return; }
+        map.once("idle", () => resolve());
+      });
+      if (cancelled) return;
+
+      // Walk the camera along the route at tracking zoom so all tiles are
+      // cached before the animation starts. Prevents blank dark patches
+      // when the camera zooms in during playback.
+      const trackingZoom = Math.max(
+        overviewRef.current.zoom + (portrait ? 1.15 : 1.75),
+        portrait ? 3.65 : 4.2
+      );
+      const PREWARM_STEPS = 6;
+      for (let i = 0; i <= PREWARM_STEPS; i++) {
+        if (cancelled) return;
+        const t = i / PREWARM_STEPS;
+        const idx = Math.min(route.length - 1, Math.round(t * (route.length - 1)));
+        map.jumpTo({
+          center: route[idx],
+          zoom: trackingZoom,
+          pitch: portrait ? 48 : 54,
+          bearing: 0,
+        });
+        await new Promise<void>((resolve) => {
+          if (cancelled) { resolve(); return; }
+          map.once("idle", () => resolve());
+        });
+      }
+      if (cancelled) return;
+
+      // Return to overview for the animation start
+      map.jumpTo({
+        center: overviewRef.current.center,
+        zoom: overviewRef.current.zoom,
+        pitch: 0,
+        bearing: 0,
+      });
+      await new Promise<void>((resolve) => {
+        if (cancelled) { resolve(); return; }
+        map.once("idle", () => resolve());
+      });
+      if (cancelled) return;
+
+      setIsPrewarming(false);
       timeRef.current = 0;
-      setTimeMs(0);
       setPlaying(true);
     };
     void setup();
@@ -263,6 +348,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
       try {
         for (const id of [
           PLANE_LAYER,
+          POINT_LABELS,
           "studio-points",
           "studio-point-halo",
           ROUTE_ACTIVE,
@@ -280,25 +366,73 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
     };
   }, [spec, route, readyVersion]);
 
+  // Replay trigger
   useEffect(() => {
     if (!spec) return;
     const resetFrame = requestAnimationFrame(() => {
       timeRef.current = 0;
-      setTimeMs(0);
       setPlaying(true);
     });
     return () => cancelAnimationFrame(resetFrame);
   }, [replayTrigger, spec]);
 
+  // Single unified animation loop — updates the map directly in the RAF
+  // callback. No React state is set per-frame, which eliminates the jitter
+  // caused by the React render → effect → map update round-trip.
   useEffect(() => {
-    if (!spec || !playing) return;
+    const map = mapRef.current;
+    const overview = overviewRef.current;
+    if (!map || !spec || !playing || !overview || route.length < 2) return;
+
     const total = getTotalDuration(spec.timings);
     const startedAt = performance.now() - timeRef.current;
+
+    // Keep a running bearing to smooth out micro-jitter
+    let prevBearing: number | null = null;
+
     const tick = (now: number) => {
-      const next = Math.min(total, now - startedAt);
-      timeRef.current = next;
-      setTimeMs(next);
-      if (next < total) {
+      const currentMs = Math.min(total, now - startedAt);
+      timeRef.current = currentMs;
+
+      // Compute the full timeline state
+      const timeline = evaluateTimeline(spec, currentMs);
+
+      // Update camera
+      const camera = getCinematicCameraPose(route, timeline, overview, spec.aspectRatio);
+      map.jumpTo(camera);
+
+      // Update route progress line and plane
+      const { point, index } = pointAlongRoute(route, timeline.routeProgress);
+      const partial = route.slice(0, index + 1);
+      partial.push(point);
+      (map.getSource(ACTIVE_SOURCE) as mapboxgl.GeoJSONSource | undefined)?.setData(
+        routeGeoJson(partial)
+      );
+
+      // Compute Mercator-projected bearing so the nose matches the on-screen line
+      let heading = smoothMercatorBearing(route, timeline.routeProgress);
+
+      // Smooth bearing transitions to eliminate micro-jumps
+      if (prevBearing !== null) {
+        let delta = heading - prevBearing;
+        while (delta > 180) delta -= 360;
+        while (delta < -180) delta += 360;
+        // Exponential smoothing — blend 30% new bearing, 70% previous
+        heading = prevBearing + delta * 0.3;
+        heading = ((heading % 360) + 360) % 360;
+      }
+      prevBearing = heading;
+
+      (map.getSource(PLANE_SOURCE) as mapboxgl.GeoJSONSource | undefined)?.setData(
+        pointFeature(point, heading)
+      );
+
+      // Update progress bar directly via DOM ref (no React re-render)
+      if (progressBarRef.current) {
+        progressBarRef.current.style.width = `${(timeline.totalProgress ?? 0) * 100}%`;
+      }
+
+      if (currentMs < total) {
         frameRef.current = requestAnimationFrame(tick);
       } else {
         frameRef.current = null;
@@ -306,31 +440,13 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
         onCompleteRef.current?.();
       }
     };
+
     frameRef.current = requestAnimationFrame(tick);
     return () => {
       if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
     };
-  }, [playing, spec]);
+  }, [playing, spec, route]);
 
-  useEffect(() => {
-    const map = mapRef.current;
-    const overview = overviewRef.current;
-    if (!map || !spec || !timeline || !overview || route.length < 2) return;
-    const camera = getCinematicCameraPose(route, timeline, overview, spec.aspectRatio);
-    map.jumpTo(camera);
-    const { point, index } = pointAlongRoute(route, timeline.routeProgress);
-    const partial = route.slice(0, index + 1);
-    partial.push(point);
-    (map.getSource(ACTIVE_SOURCE) as mapboxgl.GeoJSONSource | undefined)?.setData(
-      routeGeoJson(partial)
-    );
-    (map.getSource(PLANE_SOURCE) as mapboxgl.GeoJSONSource | undefined)?.setData(
-      pointFeature(point, bearingBetween(route[index], route[Math.min(index + 1, route.length - 1)]))
-    );
-  }, [route, spec, timeline]);
-
-  const from = spec?.route.from.name ?? "Your origin";
-  const to = spec?.route.to.name ?? "Your destination";
   const distance = spec ? Math.round(spec.route.distanceKm).toLocaleString() : "—";
 
   return (
@@ -342,6 +458,39 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
       />
       <div className="studio-map-vignette" />
 
+      {isPrewarming && spec && (
+        <div style={{
+          position: "absolute",
+          inset: 0,
+          zIndex: 10,
+          background: "rgba(4, 8, 16, 0.85)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "rgba(255,255,255,0.9)",
+          flexDirection: "column",
+          gap: "12px",
+          fontFamily: '"Geist", sans-serif'
+        }}>
+          <div style={{
+            width: "24px", height: "24px",
+            border: "2px solid rgba(255,255,255,0.2)",
+            borderTopColor: "#e0b36a",
+            borderRadius: "50%",
+            animation: "studio-spin 1s linear infinite"
+          }} />
+          <span style={{ fontSize: "14px", fontWeight: 500, letterSpacing: "0.02em" }}>
+            Preparing environment...
+          </span>
+          <style>{`
+            @keyframes studio-spin {
+              to { transform: rotate(360deg); }
+            }
+          `}</style>
+        </div>
+      )}
+
       {!spec && (
         <div className="studio-empty-state">
           <span className="studio-eyebrow">Your story starts here</span>
@@ -350,34 +499,9 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
         </div>
       )}
 
-      {spec && timeline?.scene === "intro" && (
-        <div className="studio-scene-card studio-scene-center">
-          <span className="studio-eyebrow">A journey from</span>
-          <h2>{from}</h2>
-          <div className="studio-title-rule" />
-          <h2>{to}</h2>
-          <p>{spec.story.subtitle}</p>
-        </div>
-      )}
-
-      {spec && timeline && ["origin", "flight", "destination"].includes(timeline.scene) && (
-        <>
-          <div className="studio-route-caption">
-            <span>{timeline.scene === "destination" ? "Arrived in" : "Journey to"}</span>
-            <strong>{timeline.scene === "origin" ? from : to}</strong>
-          </div>
-          <div className="studio-journey-facts">
-            <div><span>Distance</span><strong>{distance} km</strong></div>
-            <div><span>Flight</span><strong>{Math.round(spec.timings.flightMs / 1000)} sec</strong></div>
-          </div>
-        </>
-      )}
-
-      {spec && timeline?.scene === "outro" && (
-        <div className="studio-scene-card studio-scene-center">
-          <span className="studio-eyebrow">{spec.story.brand}</span>
-          <h2>{spec.story.outroTitle}</h2>
-          <p>{from} <span className="studio-arrow">→</span> {to}</p>
+      {spec && (
+        <div className="studio-distance-badge">
+          {distance} km
         </div>
       )}
 
@@ -387,7 +511,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
       </div>
       {spec && (
         <div className="studio-timeline">
-          <div style={{ width: `${(timeline?.totalProgress ?? 0) * 100}%` }} />
+          <div ref={progressBarRef} />
         </div>
       )}
     </div>

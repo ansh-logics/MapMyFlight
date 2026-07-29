@@ -84,3 +84,38 @@ export function routeGeoJson(route: RoutePoint[]) {
     geometry: { type: "LineString" as const, coordinates: route },
   };
 }
+
+/**
+ * Compute the bearing as it visually appears on a Mercator map.
+ * Standard geographic bearing (great-circle tangent) doesn't match the
+ * on-screen direction of a drawn route because Mercator stretches latitudes.
+ * This converts lat to Mercator Y before computing the angle.
+ */
+export function mercatorBearing(start: RoutePoint, end: RoutePoint): number {
+  const toRad = Math.PI / 180;
+  const mercY = (lat: number) => Math.log(Math.tan(Math.PI / 4 + (lat * toRad) / 2));
+  const dx = end[0] - start[0];
+  const dy = mercY(end[1]) - mercY(start[1]);
+  return ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
+}
+
+/**
+ * Get a smooth Mercator bearing along the route at a given progress,
+ * using a look-behind/look-ahead window to avoid discrete segment snaps.
+ */
+export function smoothMercatorBearing(
+  route: RoutePoint[],
+  progress: number,
+  windowSize = 0.018
+): number {
+  const behind = pointAlongRoute(route, Math.max(0, progress - windowSize)).point;
+  const ahead = pointAlongRoute(route, Math.min(1, progress + windowSize)).point;
+  const dx = Math.abs(ahead[0] - behind[0]);
+  const dy = Math.abs(ahead[1] - behind[1]);
+  if (dx < 1e-12 && dy < 1e-12) {
+    const { index } = pointAlongRoute(route, progress);
+    return mercatorBearing(route[index], route[Math.min(index + 1, route.length - 1)]);
+  }
+  return mercatorBearing(behind, ahead);
+}
+
