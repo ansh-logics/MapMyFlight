@@ -41,8 +41,10 @@ function waitForMap(map: mapboxgl.Map, signal?: AbortSignal) {
       reject(new Error("The map took too long to load. Please try again."));
     }, MAP_LOAD_TIMEOUT_MS);
     
+    let framesCount = 0;
     const check = () => {
-      if (map.loaded() && map.areTilesLoaded()) {
+      framesCount++;
+      if (framesCount > 2 && map.loaded() && map.areTilesLoaded()) {
         cleanup();
         resolve();
       }
@@ -61,8 +63,7 @@ function waitForMap(map: mapboxgl.Map, signal?: AbortSignal) {
     
     map.on("render", check);
     signal?.addEventListener("abort", onAbort, { once: true });
-    
-    check(); // check immediately
+    map.triggerRepaint();
   });
 }
 

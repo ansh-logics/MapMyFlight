@@ -292,14 +292,24 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
 
       const waitForTiles = () => new Promise<void>((resolve) => {
         if (cancelled) { resolve(); return; }
+        let framesCount = 0;
         const check = () => {
-          if (cancelled || (map.loaded() && map.areTilesLoaded())) {
+          if (cancelled) {
+            map.off("render", check);
+            resolve();
+            return;
+          }
+          framesCount++;
+          // Wait at least 2 frames for Mapbox to invalidate the viewport
+          // and request new tiles before we trust `areTilesLoaded()`
+          if (framesCount > 2 && map.loaded() && map.areTilesLoaded()) {
             map.off("render", check);
             resolve();
           }
         };
         map.on("render", check);
-        check(); // Check immediately in case it's already loaded
+        // Force a repaint to start the frame loop
+        map.triggerRepaint();
       });
 
       // Pre-warm: wait for overview tiles first

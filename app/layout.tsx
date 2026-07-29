@@ -13,8 +13,20 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Wayfare — Travel Video Studio",
-  description: "Create premium cinematic travel videos from any journey.",
+  title: "MapMyFlight — Cinematic Travel Video Studio",
+  description: "Create stunning 3D cinematic travel videos and flight animations for your journeys. Premium map animations, easy export in 1080p, and beautifully rendered routes.",
+  keywords: ["travel video", "flight animation", "map animation", "MapMyFlight", "3D route", "travel map", "route animation", "cinematic map"],
+  openGraph: {
+    title: "MapMyFlight — Cinematic Travel Video Studio",
+    description: "Create stunning 3D cinematic travel videos and flight animations for your journeys.",
+    type: "website",
+    siteName: "MapMyFlight",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "MapMyFlight — Cinematic Travel Video Studio",
+    description: "Create stunning 3D cinematic travel videos and flight animations for your journeys.",
+  },
 };
 
 export default function RootLayout({
