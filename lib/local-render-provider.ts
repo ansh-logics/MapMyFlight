@@ -40,21 +40,29 @@ function waitForMap(map: mapboxgl.Map, signal?: AbortSignal) {
       cleanup();
       reject(new Error("The map took too long to load. Please try again."));
     }, MAP_LOAD_TIMEOUT_MS);
-    const onIdle = () => {
-      cleanup();
-      resolve();
+    
+    const check = () => {
+      if (map.loaded() && map.areTilesLoaded()) {
+        cleanup();
+        resolve();
+      }
     };
+    
     const onAbort = () => {
       cleanup();
       reject(new DOMException("Render cancelled", "AbortError"));
     };
+    
     const cleanup = () => {
       window.clearTimeout(timeout);
-      map.off("idle", onIdle);
+      map.off("render", check);
       signal?.removeEventListener("abort", onAbort);
     };
-    map.once("idle", onIdle);
+    
+    map.on("render", check);
     signal?.addEventListener("abort", onAbort, { once: true });
+    
+    check(); // check immediately
   });
 }
 

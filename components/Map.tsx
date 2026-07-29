@@ -290,12 +290,21 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
         zoom: map.getZoom() - (portrait ? 0.3 : 0),
       };
 
+      const waitForTiles = () => new Promise<void>((resolve) => {
+        if (cancelled) { resolve(); return; }
+        const check = () => {
+          if (cancelled || (map.loaded() && map.areTilesLoaded())) {
+            map.off("render", check);
+            resolve();
+          }
+        };
+        map.on("render", check);
+        check(); // Check immediately in case it's already loaded
+      });
+
       // Pre-warm: wait for overview tiles first
       setIsPrewarming(true);
-      await new Promise<void>((resolve) => {
-        if (cancelled) { resolve(); return; }
-        map.once("idle", () => resolve());
-      });
+      await waitForTiles();
       if (cancelled) return;
 
       // Walk the camera along the route at tracking zoom so all tiles are
@@ -316,10 +325,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
           pitch: portrait ? 48 : 54,
           bearing: 0,
         });
-        await new Promise<void>((resolve) => {
-          if (cancelled) { resolve(); return; }
-          map.once("idle", () => resolve());
-        });
+        await waitForTiles();
       }
       if (cancelled) return;
 
@@ -330,10 +336,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
         pitch: 0,
         bearing: 0,
       });
-      await new Promise<void>((resolve) => {
-        if (cancelled) { resolve(); return; }
-        map.once("idle", () => resolve());
-      });
+      await waitForTiles();
       if (cancelled) return;
 
       setIsPrewarming(false);
