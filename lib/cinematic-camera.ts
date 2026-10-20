@@ -48,16 +48,38 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
+function circularMean(angles: number[]) {
+  let x = 0;
+  let y = 0;
+  for (const angle of angles) {
+    x += Math.cos((angle * Math.PI) / 180);
+    y += Math.sin((angle * Math.PI) / 180);
+  }
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+/** Steepest tilt the chase uses; pre-warming should match it. */
+export function getTrackingPitch(aspectRatio: AspectRatio) {
+  return aspectRatio === "9:16" ? 46 : 60;
+}
+
+/** Closest the camera gets during the chase; also used to pre-warm tiles. */
+export function getTrackingZoom(overview: OverviewCamera, aspectRatio: AspectRatio) {
+  const portrait = aspectRatio === "9:16";
+  return Math.max(overview.zoom + (portrait ? 1.5 : 1.9), portrait ? 3.9 : 4.3);
+}
+
 /**
- * Single continuous "pan shot" camera.
+ * Single continuous camera move, written as a pure function of time so the
+ * live preview and the frame-exact export always agree.
  *
- * Instead of switching between discrete scene-specific camera behaviours
- * (which causes visible snaps at every scene boundary), this function
- * blends smoothly between an overview pose and a route-tracking pose
- * using a single blend curve driven by `totalProgress`.
+ *   wide establishing push → descend onto the origin → chase the aircraft,
+ *   craning up at cruise to reveal the distance → push in on arrival →
+ *   pull back to the full route.
  *
- * The result is one unbroken camera move:
- *   overview → zoom-in → track the plane → zoom-out → overview
+ * Every stage blends through smoothsteps, so there are no snaps at scene
+ * boundaries. While tracking, the camera also swings slowly from one side
+ * of the aircraft to the other, which gives the terrain real parallax.
  */
 export function getCinematicCameraPose(
   route: RoutePoint[],
@@ -66,46 +88,52 @@ export function getCinematicCameraPose(
   aspectRatio: AspectRatio
 ): CinematicCameraPose {
   const portrait = aspectRatio === "9:16";
-  const trackingZoom = Math.max(
-    overview.zoom + (portrait ? 1.15 : 1.75),
-    portrait ? 3.65 : 4.2
-  );
-  const trackingPitch = portrait ? 48 : 54;
-
-  // totalProgress runs 0→1 linearly over the entire animation duration.
   const tp = timeline.totalProgress;
-  // routeProgress is the eased 0→1 position of the plane along the route.
   const rp = timeline.routeProgress;
+  const trackingZoom = getTrackingZoom(overview, aspectRatio);
 
-  // ── Blend curve ─────────────────────────────────────────────
-  // Smoothly ramp from 0 (overview) to 1 (tracking) during the
-  // first ~22% of the total time, and back down during the last ~20%.
-  const blendIn = smoothstep(0, 0.22, tp);
-  const blendOut = smoothstep(1.0, 0.80, tp);
-  const blend = Math.min(blendIn, blendOut);
+  // How "inside the shot" the camera is: 0 = overview, 1 = chasing.
+  const engage = smoothstep(0.05, 0.25, tp);
+  const release = smoothstep(0.97, 0.79, tp);
+  const blend = engage * release;
 
-  // ── Route position & heading ────────────────────────────────
-  const { point: routePoint } = pointAlongRoute(route, rp);
-  const behindPoint = pointAlongRoute(route, Math.max(0, rp - 0.03)).point;
-  const aheadPoint = pointAlongRoute(route, Math.min(1, rp + 0.03)).point;
+  // Cruise: 0 on the ground, 1 mid-route.
+  const cruise = smoothstep(0, 0.4, rp) * smoothstep(1, 0.6, rp);
 
-  // Bearing from a look-behind to a look-ahead for a smooth heading
-  const heading = bearingBetween(behindPoint, aheadPoint);
+  // Heading: a wide circular average keeps the camera from twitching on
+  // curvy great circles while still following the route's big turns.
+  const sample = (offset: number) => pointAlongRoute(route, Math.min(1, Math.max(0, rp + offset))).point;
+  const heading = circularMean([
+    bearingBetween(sample(-0.08), sample(0.02)),
+    bearingBetween(sample(-0.04), sample(0.04)),
+    bearingBetween(sample(-0.02), sample(0.08)),
+  ]);
 
-  // Tracking center sits slightly ahead of the plane
+  // Lead the aircraft so it sits in the lower third with room ahead of it.
+  const lead = 0.018 + cruise * 0.022;
+  const { point: aircraft } = pointAlongRoute(route, rp);
+  const ahead = sample(lead);
   const trackingCenter: RoutePoint = [
-    routePoint[0] + (aheadPoint[0] - routePoint[0]) * 0.25,
-    routePoint[1] + (aheadPoint[1] - routePoint[1]) * 0.25,
+    aircraft[0] + (ahead[0] - aircraft[0]) * 0.6,
+    aircraft[1] + (ahead[1] - aircraft[1]) * 0.6,
   ];
 
-  // Subtle zoom wave during the tracked phase for a cinematic feel
-  const trackPhase = Math.max(0, Math.min(1, (tp - 0.22) / 0.58));
-  const zoomWave = Math.sin(Math.PI * trackPhase) * 0.28;
+  // Crane up at cruise, push in close for take-off and touchdown.
+  const zoom = trackingZoom + 0.25 - cruise * 0.85;
+  // Tall frames see much further toward the horizon, so portrait tilts less
+  // (which also keeps tile loads reasonable for vertical exports).
+  const pitch = getTrackingPitch(aspectRatio) - cruise * (portrait ? 8 : 12);
+  // Slow orbit: start on one quarter, finish on the other.
+  const orbit = (rp - 0.5) * (portrait ? 26 : 34);
+
+  // The overview itself is never quite still: a gentle push at the start
+  // and a slow pull-back at the end.
+  const overviewZoom = overview.zoom - 0.3 * (1 - smoothstep(0, 0.12, tp)) - 0.12 * smoothstep(0.88, 1, tp);
 
   return {
     center: interpolatePoint(overview.center, trackingCenter, blend),
-    zoom: lerp(overview.zoom, trackingZoom + zoomWave, blend),
-    pitch: lerp(0, trackingPitch, blend),
-    bearing: interpolateBearing(0, heading, blend),
+    zoom: lerp(overviewZoom, zoom, blend),
+    pitch: lerp(0, pitch, blend),
+    bearing: interpolateBearing(0, heading + orbit, blend),
   };
 }

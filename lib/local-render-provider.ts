@@ -18,8 +18,14 @@ import {
 import { evaluateTimeline } from "./timeline";
 import {
   getCinematicCameraPose,
+  getTrackingPitch,
+  getTrackingZoom,
   type OverviewCamera,
 } from "./cinematic-camera";
+import { drawFlightOverlay } from "./flight-graphics";
+
+// Set here as well as in the preview so the renderer works on its own.
+if (!mapboxgl.accessToken) mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? "";
 
 const MAP_LOAD_TIMEOUT_MS = 20_000;
 
@@ -34,12 +40,12 @@ function throwIfAborted(signal?: AbortSignal) {
   if (signal?.aborted) throw new DOMException("Render cancelled", "AbortError");
 }
 
-function waitForMap(map: mapboxgl.Map, signal?: AbortSignal) {
+function waitForMap(map: mapboxgl.Map, signal?: AbortSignal, timeoutMs = MAP_LOAD_TIMEOUT_MS) {
   return new Promise<void>((resolve, reject) => {
     const timeout = window.setTimeout(() => {
       cleanup();
       reject(new Error("The map took too long to load. Please try again."));
-    }, MAP_LOAD_TIMEOUT_MS);
+    }, timeoutMs);
     
     let framesCount = 0;
     const check = () => {
@@ -67,6 +73,13 @@ function waitForMap(map: mapboxgl.Map, signal?: AbortSignal) {
   });
 }
 
+/** Pre-warming only fills the tile cache, so a slow tile must never fail an export. */
+function prewarmWait(map: mapboxgl.Map, signal?: AbortSignal) {
+  return waitForMap(map, signal, 6000).catch((error) => {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+  });
+}
+
 function roundedRect(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -78,48 +91,6 @@ function roundedRect(
   const r = Math.min(radius, width / 2, height / 2);
   ctx.beginPath();
   ctx.roundRect(x, y, width, height, r);
-}
-
-function drawPlane(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  bearing: number,
-  color: string,
-  scale: number
-) {
-  const size = 36 * scale;
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate((bearing * Math.PI) / 180);
-  ctx.shadowColor = "rgba(0,0,0,.55)";
-  ctx.shadowBlur = size * 0.42;
-  ctx.shadowOffsetY = size * 0.16;
-  ctx.fillStyle = color;
-  ctx.strokeStyle = "rgba(255,255,255,.78)";
-  ctx.lineWidth = Math.max(1.5, size * 0.045);
-  ctx.beginPath();
-  ctx.moveTo(0, -size);
-  ctx.bezierCurveTo(size * 0.22, -size * 0.82, size * 0.23, -size * 0.2, size * 0.2, 0);
-  ctx.lineTo(size * 0.92, size * 0.38);
-  ctx.lineTo(size * 0.92, size * 0.58);
-  ctx.lineTo(size * 0.2, size * 0.38);
-  ctx.lineTo(size * 0.15, size * 0.8);
-  ctx.lineTo(size * 0.38, size);
-  ctx.lineTo(size * 0.38, size * 1.12);
-  ctx.lineTo(0, size);
-  ctx.lineTo(-size * 0.38, size * 1.12);
-  ctx.lineTo(-size * 0.38, size);
-  ctx.lineTo(-size * 0.15, size * 0.8);
-  ctx.lineTo(-size * 0.2, size * 0.38);
-  ctx.lineTo(-size * 0.92, size * 0.58);
-  ctx.lineTo(-size * 0.92, size * 0.38);
-  ctx.lineTo(-size * 0.2, 0);
-  ctx.bezierCurveTo(-size * 0.23, -size * 0.2, -size * 0.22, -size * 0.82, 0, -size);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  ctx.restore();
 }
 
 function drawMarker(
@@ -220,7 +191,8 @@ function drawFrame(frame: FrameContext, timeMs: number) {
   const { ctx, canvas, map, route, spec, width, height } = frame;
   const timeline = evaluateTimeline(spec, timeMs);
   const portrait = spec.aspectRatio === "9:16";
-  const unit = Math.min(width / 1920, height / 1080);
+  // Sized from the short side so vertical exports get full-size graphics.
+  const unit = Math.min(width, height) / 1080;
   const safeX = portrait ? width * 0.075 : width * 0.065;
   const mapCanvas = map.getCanvas();
 
@@ -278,27 +250,15 @@ function drawFrame(frame: FrameContext, timeMs: number) {
   drawLabel(ctx, spec.route.from.name, origin.x, origin.y - 34 * unit, unit, "left");
   drawLabel(ctx, spec.route.to.name, destination.x, destination.y - 34 * unit, unit, "right");
 
-  if (timeline.scene !== "intro" && timeline.scene !== "outro") {
-    // Compute bearing from screen-projected coordinates so the plane nose
-    // matches the visual route direction (accounts for camera rotation/pitch).
-    const lookBehind = pointAlongRoute(route, Math.max(0, timeline.routeProgress - 0.018));
-    const lookAhead = pointAlongRoute(route, Math.min(1, timeline.routeProgress + 0.018));
-    const behindScreen = map.project(lookBehind.point);
-    const aheadScreen = map.project(lookAhead.point);
-    const dx = aheadScreen.x - behindScreen.x;
-    const dy = aheadScreen.y - behindScreen.y;
-    // Canvas Y is inverted (down = positive), so negate dy for bearing math
-    const screenBearing = ((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360;
-
-    drawPlane(
-      ctx,
-      activeScreen.x,
-      activeScreen.y,
-      screenBearing,
-      spec.appearance.vehicleColor,
-      spec.appearance.vehicleScale * unit
-    );
-  }
+  drawFlightOverlay({
+    ctx,
+    project: (point) => map.project(point),
+    route,
+    timeline,
+    spec,
+    unit,
+    timeMs,
+  });
 
   // Distance badge
   if (timeline.scene !== "intro" && timeline.scene !== "outro") {
@@ -393,8 +353,7 @@ async function createRenderMap(
   // Pre-warm: walk the camera along the route at tracking zoom so all
   // tiles are cached before the animation begins. Without this, zoomed-in
   // frames render with blank/dark patches as tiles stream in.
-  const portrait = spec.aspectRatio === "9:16";
-  const trackingZoom = Math.max(overview.zoom + (portrait ? 1.15 : 1.75), portrait ? 3.65 : 4.2);
+  const trackingZoom = getTrackingZoom(overview, spec.aspectRatio) + 0.25;
   const PREWARM_STEPS = 8;
   for (let i = 0; i <= PREWARM_STEPS; i++) {
     throwIfAborted(signal);
@@ -403,17 +362,17 @@ async function createRenderMap(
     map.jumpTo({
       center: route[idx],
       zoom: trackingZoom,
-      pitch: portrait ? 48 : 54,
+      pitch: getTrackingPitch(spec.aspectRatio),
       bearing: 0,
     });
     map.triggerRepaint();
-    await waitForMap(map, signal);
+    await prewarmWait(map, signal);
   }
 
   // Return to overview for the animation start
   map.jumpTo({ ...overview, pitch: 0, bearing: 0 });
   map.triggerRepaint();
-  await waitForMap(map, signal);
+  await prewarmWait(map, signal);
 
   return {
     map,
@@ -644,4 +603,51 @@ export function downloadRender(result: RenderResult, from: string, to: string) {
   anchor.download = `${slug || "travel-story"}-${result.width}x${result.height}.${result.format}`;
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+/**
+ * Renders individual export frames as JPEG data URLs, using exactly the same
+ * map, camera and overlay pipeline as a full export. Handy for posters and
+ * for checking a shot without encoding a whole film.
+ */
+export async function renderStills(
+  spec: RenderSpecV1,
+  timesMs: number[],
+  options: { signal?: AbortSignal; quality?: number } = {}
+): Promise<string[]> {
+  await document.fonts.ready;
+  const { width, height } = getOutputSize(spec.aspectRatio, spec.quality);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d", { alpha: false });
+  if (!ctx) throw new Error("Could not create the export canvas.");
+  const renderMap = await createRenderMap(spec, width, height, options.signal);
+  try {
+    const frameContext: FrameContext = {
+      canvas,
+      ctx,
+      map: renderMap.map,
+      route: renderMap.route,
+      spec,
+      width,
+      height,
+      overview: renderMap.overview,
+    };
+    const stills: string[] = [];
+    for (const timeMs of timesMs) {
+      throwIfAborted(options.signal);
+      await renderCameraFrame(frameContext, timeMs, options.signal);
+      // Best effort: give tiles a moment to settle, but never stall a still.
+      await waitForMap(renderMap.map, options.signal, 4000).catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") throw error;
+      });
+      drawFrame(frameContext, timeMs);
+      stills.push(canvas.toDataURL("image/jpeg", options.quality ?? 0.88));
+    }
+    return stills;
+  } finally {
+    renderMap.map.remove();
+    renderMap.container.remove();
+  }
 }

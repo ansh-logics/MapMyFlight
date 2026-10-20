@@ -26,6 +26,11 @@ export function easeInOutCubic(t: number) {
     : 1 - Math.pow(-2 * value + 2, 3) / 2;
 }
 
+/** Gentler than cubic at the ends, so take-off doesn't linger on the runway. */
+export function easeInOutSine(t: number) {
+  return -(Math.cos(Math.PI * clamp01(t)) - 1) / 2;
+}
+
 export function easeOutCubic(t: number) {
   return 1 - Math.pow(1 - clamp01(t), 3);
 }
@@ -69,7 +74,7 @@ export function evaluateTimeline(spec: RenderSpecV1, timeMs: number): TimelineFr
       scene: "flight",
       sceneProgress: progress,
       totalProgress: time / total,
-      routeProgress: easeInOutCubic(progress),
+      routeProgress: easeInOutSine(progress),
       overlayOpacity: 1,
       cameraProgress: 0.12 + easeInOutCubic(progress) * 0.76,
     };
