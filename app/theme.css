@@ -1,0 +1,35 @@
+/* ==========================================================================
+   Shared design tokens for the landing page (.site) and the studio (.studio).
+   Font variables come from next/font on <html>, so these resolve anywhere.
+   ========================================================================== */
+
+.site,
+.studio {
+  --bg: #07080b;
+  --bg-raised: #0c0e13;
+  --surface: #11141b;
+  --surface-2: #161a23;
+  --surface-3: #1d222d;
+  --ink: #f3ede2;
+  --ink-soft: #c9c2b5;
+  --muted: #8b8f99;
+  --faint: #5d616b;
+  --line: rgba(243, 237, 226, 0.08);
+  --line-strong: rgba(243, 237, 226, 0.15);
+  --gold: #e0b36a;
+  --gold-bright: #f2cf92;
+  --gold-deep: #b98a45;
+  --gold-soft: rgba(224, 179, 106, 0.12);
+  --gold-line: rgba(224, 179, 106, 0.32);
+  --gold-glow: rgba(224, 179, 106, 0.35);
+  --serif: var(--font-instrument-serif), "Times New Roman", serif;
+  --sans: var(--font-geist-sans), "Helvetica Neue", Arial, sans-serif;
+  --mono: var(--font-geist-mono), ui-monospace, monospace;
+  --radius: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 26px;
+  --shadow-lg: 0 30px 80px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.02);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --container: 1200px;
+  --gutter: clamp(16px, 4vw, 40px);
+}
