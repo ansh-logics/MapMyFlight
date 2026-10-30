@@ -23,6 +23,8 @@ type MapProps = {
   spec: RenderSpecV1 | null;
   replayTrigger?: number;
   onSequenceComplete?: () => void;
+  /** Called every animation frame with overall progress (0–1); keep it cheap. */
+  onProgress?: (progress: number) => void;
 };
 
 async function waitForStyle(map: mapboxgl.Map) {
@@ -30,7 +32,7 @@ async function waitForStyle(map: mapboxgl.Map) {
   await new Promise<void>((resolve) => map.once("style.load", () => resolve()));
 }
 
-export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: MapProps) {
+export default function Map({ spec, replayTrigger = 0, onSequenceComplete, onProgress }: MapProps) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const appliedStyleRef = useRef("mapbox://styles/mapbox/dark-v11");
@@ -38,6 +40,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
   const frameRef = useRef<number | null>(null);
   const timeRef = useRef(0);
   const onCompleteRef = useRef(onSequenceComplete);
+  const onProgressRef = useRef(onProgress);
   const progressBarRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const drawOverlayRef = useRef<((timeMs: number) => void) | null>(null);
@@ -55,7 +58,8 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
 
   useEffect(() => {
     onCompleteRef.current = onSequenceComplete;
-  }, [onSequenceComplete]);
+    onProgressRef.current = onProgress;
+  }, [onSequenceComplete, onProgress]);
 
   // Initialize the map once
   useEffect(() => {
@@ -111,17 +115,20 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
         new mapboxgl.LngLatBounds(route[0], route[0])
       );
       const portrait = spec.aspectRatio === "9:16";
+      // Proportional padding, matching the exporter, so small previews
+      // (phones, narrow windows) frame the route the same way the film does.
+      const { clientWidth: w, clientHeight: h } = map.getContainer();
       map.fitBounds(bounds, {
         padding: portrait
-          ? { top: 220, right: 55, bottom: 250, left: 55 }
-          : { top: 120, right: 100, bottom: 130, left: 100 },
+          ? { top: h * 0.25, right: w * 0.08, bottom: h * 0.26, left: w * 0.08 }
+          : { top: h * 0.18, right: w * 0.08, bottom: h * 0.18, left: w * 0.08 },
         duration: 0,
       });
       const center = map.getCenter();
       map.setCenter([center.lng, center.lat]);
       overviewRef.current = {
         center: [center.lng, center.lat],
-        zoom: map.getZoom() - (portrait ? 0.3 : 0),
+        zoom: map.getZoom(),
       };
 
       // Best effort: pre-warming only fills the tile cache, so it must never
@@ -271,6 +278,7 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
       if (progressBarRef.current) {
         progressBarRef.current.style.width = `${(timeline.totalProgress ?? 0) * 100}%`;
       }
+      onProgressRef.current?.(timeline.totalProgress ?? 0);
 
       if (currentMs < total) {
         frameRef.current = requestAnimationFrame(tick);
@@ -313,43 +321,17 @@ export default function Map({ spec, replayTrigger = 0, onSequenceComplete }: Map
       <div className="studio-map-vignette" />
 
       {isPrewarming && spec && (
-        <div style={{
-          position: "absolute",
-          inset: 0,
-          zIndex: 10,
-          background: "rgba(4, 8, 16, 0.85)",
-          backdropFilter: "blur(4px)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "rgba(255,255,255,0.9)",
-          flexDirection: "column",
-          gap: "12px",
-          fontFamily: '"Geist", sans-serif'
-        }}>
-          <div style={{
-            width: "24px", height: "24px",
-            border: "2px solid rgba(255,255,255,0.2)",
-            borderTopColor: "#e0b36a",
-            borderRadius: "50%",
-            animation: "studio-spin 1s linear infinite"
-          }} />
-          <span style={{ fontSize: "14px", fontWeight: 500, letterSpacing: "0.02em" }}>
-            Preparing environment...
-          </span>
-          <style>{`
-            @keyframes studio-spin {
-              to { transform: rotate(360deg); }
-            }
-          `}</style>
+        <div className="studio-prewarm" role="status">
+          <span className="studio-prewarm-spinner" aria-hidden="true" />
+          <span>Preparing the scene…</span>
         </div>
       )}
 
       {!spec && (
         <div className="studio-empty-state">
           <span className="studio-eyebrow">Your story starts here</span>
-          <h2>Your journey, in motion.</h2>
-          <p>A cinematic route, crafted in seconds.</p>
+          <h2>Your journey, <em>in motion.</em></h2>
+          <p>Choose an origin and a destination to compose the first scene.</p>
         </div>
       )}
 

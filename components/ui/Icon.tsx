@@ -10,7 +10,12 @@ export type IconName =
   | "check"
   | "menu"
   | "close"
-  | "spark";
+  | "spark"
+  | "swap"
+  | "replay"
+  | "export"
+  | "route"
+  | "spinner";
 
 const paths: Record<IconName, React.ReactNode> = {
   arrow: <><path d="M5 12h14" /><path d="m13 6 6 6-6 6" /></>,
@@ -25,6 +30,11 @@ const paths: Record<IconName, React.ReactNode> = {
   menu: <><path d="M4 8h16" /><path d="M4 16h16" /></>,
   close: <><path d="m6 6 12 12" /><path d="M18 6 6 18" /></>,
   spark: <path d="m12 3 1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6L12 3Z" />,
+  swap: <><path d="M7 4v16" /><path d="m3 8 4-4 4 4" /><path d="M17 20V4" /><path d="m21 16-4 4-4-4" /></>,
+  replay: <><path d="M4 12a8 8 0 1 0 2.3-5.6" /><path d="M4 4v4h4" /></>,
+  export: <><path d="M12 3v12" /><path d="m7 8 5-5 5 5" /><path d="M5 13v7h14v-7" /></>,
+  route: <><circle cx="6" cy="18" r="2" /><circle cx="18" cy="6" r="2" /><path d="M8 18c7 0 1-12 8-12" /></>,
+  spinner: <path d="M12 3a9 9 0 1 1-9 9" />,
 };
 
 export default function Icon({ name, size = 18, className }: { name: IconName; size?: number; className?: string }) {

@@ -80,6 +80,8 @@ export default function HowItWorks() {
         gsap.set(states.slice(1), { autoAlpha: 0, y: 20 });
         gsap.set(steps.slice(1), { opacity: 0.35 });
 
+        const percentEl = rootRef.current?.querySelector<HTMLElement>(".mock-percent");
+        const percent = { value: 0 };
         const tl = gsap.timeline({
           defaults: { ease: "power2.inOut" },
           scrollTrigger: {
@@ -123,9 +125,17 @@ export default function HowItWorks() {
           .to(steps[2], { opacity: 1, duration: 0.2 }, 2)
           .fromTo(".mock-progress-fill", { scaleX: 0 }, { scaleX: 1, ease: "none", duration: 0.7 }, 2.2)
           .fromTo(
-            ".mock-percent",
-            { textContent: 0 },
-            { textContent: 100, snap: { textContent: 1 }, ease: "none", duration: 0.7, modifiers: { textContent: (value: string) => `${value}%` } },
+            percent,
+            { value: 0 },
+            {
+              value: 100,
+              ease: "none",
+              duration: 0.7,
+              // Whole numbers only: the counter reads like a real render.
+              onUpdate: () => {
+                if (percentEl) percentEl.textContent = `${Math.round(percent.value)}%`;
+              },
+            },
             2.2
           )
           .from(".mock-state-2 .mock-button", { autoAlpha: 0, y: 8, duration: 0.2 }, 2.9);

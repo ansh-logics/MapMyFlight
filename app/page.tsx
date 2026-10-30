@@ -8,6 +8,7 @@ import Features from "@/components/landing/Features";
 import SiteFooter from "@/components/landing/SiteFooter";
 import Icon from "@/components/ui/Icon";
 import { DEFAULT_TIMINGS, getTotalDuration } from "@/lib/render-spec";
+import { SITE } from "@/lib/site";
 
 const ROUTES = [
   ["Delhi", "Tokyo", "5,837 km"],
@@ -49,9 +50,47 @@ const FAQS = [
   },
 ];
 
+// Structured data: the product itself, plus the FAQ for rich results.
+const STRUCTURED_DATA = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebApplication",
+      name: SITE.name,
+      url: SITE.url,
+      description: SITE.description,
+      applicationCategory: "MultimediaApplication",
+      operatingSystem: "Any (modern web browser)",
+      browserRequirements: "Requires WebGL. MP4 export uses WebCodecs (recent Chrome or Edge); other browsers export WebM.",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      featureList: [
+        "Great-circle flight routes between any two places",
+        "Cinematic 3D chase camera over terrain",
+        "1080p export in 16:9 and 9:16",
+        "Rendered locally in the browser, no uploads",
+      ],
+      image: `${SITE.url}/opengraph-image`,
+      author: { "@type": "Person", name: SITE.author.name, url: SITE.author.url },
+    },
+    {
+      "@type": "FAQPage",
+      mainEntity: FAQS.map((item) => ({
+        "@type": "Question",
+        name: item.q,
+        acceptedAnswer: { "@type": "Answer", text: item.a },
+      })),
+    },
+  ],
+};
+
 export default function Home() {
   return (
     <div className="site">
+      <script
+        type="application/ld+json"
+        // JSON.stringify escapes the content; "<" is escaped too so the tag can't be closed early.
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(STRUCTURED_DATA).replace(/</g, "\\u003c") }}
+      />
       <a href="#main" className="skip-link">Skip to content</a>
       <SiteNav />
       <main id="main">
