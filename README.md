@@ -18,6 +18,7 @@ a 3D chase camera over real terrain and a clean finish. Free, no sign-up, nothin
 ![Mapbox GL JS](https://img.shields.io/badge/Mapbox_GL_JS-3-4264fb?logo=mapbox&logoColor=white)
 ![GSAP](https://img.shields.io/badge/GSAP-3-0ae448?logo=greensock&logoColor=white)
 ![WebCodecs](https://img.shields.io/badge/Export-WebCodecs_H.264-e0b36a)
+[![License: MIT](https://img.shields.io/badge/License-MIT-f2cf92)](LICENSE)
 
 <img src="docs/media/flight.webp" alt="A plane flying the great-circle route from Delhi to Tokyo, followed by a chase camera" width="800" />
 
@@ -166,6 +167,10 @@ MapMyFlight is a standard Next.js app with no server-side secrets beyond a publi
 
 - Map data © [Mapbox](https://www.mapbox.com/about/maps/) © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright). Exports keep this attribution in the frame, as the terms require.
 - [Instrument Serif](https://github.com/Instrument/instrument-serif) and [Geist](https://github.com/vercel/geist-font) are licensed under the SIL Open Font License; copies are in [`assets/fonts`](assets/fonts).
+
+## License
+
+Released under the [MIT License](LICENSE). Map data, fonts and other third-party assets keep their own licenses (see [Credits](#credits)).
 
 ---
 
